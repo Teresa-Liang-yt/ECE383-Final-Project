@@ -38,10 +38,7 @@ from launch.actions import (
     LogInfo,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import (
-    LaunchConfiguration,
-    PathJoinSubstitution,
-)
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -63,7 +60,6 @@ def generate_launch_description():
     bartender_share  = FindPackageShare('bartender_arm')
     kortex_bringup   = get_package_share_directory('kortex_bringup')
 
-    config_path = PathJoinSubstitution([bartender_share, 'config', 'robot_params.yaml'])
     rviz_config = PathJoinSubstitution([bartender_share, 'rviz', 'bartender_arm.rviz'])
 
     # -----------------------------------------------------------------------
@@ -86,15 +82,13 @@ def generate_launch_description():
 
     # -----------------------------------------------------------------------
     # 2. Metrics subscriber node (starts immediately)
+    # config_path is left empty so the node auto-resolves via get_package_share_directory
     # -----------------------------------------------------------------------
     metrics_node = Node(
         package='bartender_arm',
         executable='metrics_subscriber_node',
         name='metrics_subscriber',
-        parameters=[
-            config_path,
-            {'log_path': '/tmp/bartender_metrics.csv'},
-        ],
+        parameters=[{'log_path': '/tmp/bartender_metrics.csv'}],
         output='screen',
         emulate_tty=True,
     )
@@ -127,14 +121,10 @@ def generate_launch_description():
         package='bartender_arm',
         executable='trajectory_publisher_node',
         name='trajectory_publisher',
-        parameters=[
-            config_path,
-            {
-                'trajectory_mode': LaunchConfiguration('trajectory_mode'),
-                'loop_trajectory': True,
-                # coeffs_path defaults to repo root / optimized_coeffs.npy
-            },
-        ],
+        parameters=[{
+            'trajectory_mode': LaunchConfiguration('trajectory_mode'),
+            'loop_trajectory': True,
+        }],
         output='screen',
         emulate_tty=True,
     )

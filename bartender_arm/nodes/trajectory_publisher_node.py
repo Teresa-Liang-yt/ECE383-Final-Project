@@ -66,6 +66,7 @@ class TrajectoryPublisherNode(Node):
             self.get_logger().error(f'Config not found: {cfg_path}')
             raise FileNotFoundError(cfg_path)
 
+        self.get_logger().info(f'Loading config from: {cfg_path}')
         with open(cfg_path) as f:
             self.params = yaml.safe_load(f)
 

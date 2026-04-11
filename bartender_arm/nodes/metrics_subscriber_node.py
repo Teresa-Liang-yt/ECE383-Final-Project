@@ -60,6 +60,7 @@ class MetricsSubscriberNode(Node):
             share_dir = get_package_share_directory('bartender_arm')
             cfg_path  = os.path.join(share_dir, 'config', 'robot_params.yaml')
 
+        self.get_logger().info(f'Loading config from: {cfg_path}')
         with open(cfg_path) as f:
             self.params = yaml.safe_load(f)
 

@@ -23,7 +23,7 @@ setup(
         # RViz config
         (os.path.join('share', package_name, 'rviz'),
          glob('rviz/*.rviz')),
-        # Scripts (also installed as executables via console_scripts)
+        # Standalone scripts (installed to share for reference/direct use)
         (os.path.join('share', package_name, 'scripts'),
          glob('scripts/*.py')),
     ],
@@ -36,8 +36,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'trajectory_publisher_node = scripts.trajectory_publisher_node:main',
-            'metrics_subscriber_node   = scripts.metrics_subscriber_node:main',
+            'trajectory_publisher_node = bartender_arm.nodes.trajectory_publisher_node:main',
+            'metrics_subscriber_node = bartender_arm.nodes.metrics_subscriber_node:main',
         ],
     },
 )

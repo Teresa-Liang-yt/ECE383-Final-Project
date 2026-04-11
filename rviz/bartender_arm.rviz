@@ -1,25 +1,20 @@
 Panels:
-  - Class: rviz_common/3D
-    Name: 3D View
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
     Property Tree Widget:
       Expanded:
         - /Global Options1
         - /RobotModel1
         - /TF1
-        - /Marker1
       Splitter Ratio: 0.5
-    Tree Height: 549
+    Tree Height: 600
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
-    Expanded:
-      - /2D Goal Pose1
-      - /Publish Point1
     Name: Tool Properties
-    Splitter Ratio: 0.5886790156364441
+    Splitter Ratio: 0.5
   - Class: rviz_common/Views
-    Expanded:
-      - /Current View1
     Name: Views
     Splitter Ratio: 0.5
 Preferences:
@@ -35,7 +30,7 @@ Visualization Manager:
       Color: 160; 160; 164
       Enabled: true
       Line Style:
-        Line Width: 0.029999999329447746
+        Line Width: 0.03
         Value: Lines
       Name: Grid
       Normal Cell Count: 0
@@ -49,16 +44,15 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
-      Description File: ""
       Description Source: Topic
-      Description Topic: /robot_description
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
       Enabled: true
-      Links:
-        All Links Enabled: true
-        Expand Joint Details: false
-        Expand Link Details: false
-        Expand Tree: false
-        Link Tree Style: Links in Alphabetic Order
       Name: RobotModel
       TF Prefix: ""
       Update Interval: 0
@@ -74,25 +68,21 @@ Visualization Manager:
       Show Arrows: true
       Show Axes: true
       Show Names: false
-      Tree:
-        {}
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: EE Path (Optimized)
+      Name: EE Path
       Namespaces:
         ee_path: true
       Queue Size: 100
-      Topic: /bartender/ee_path
-      Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: EE Path (Baseline)
-      Namespaces:
-        ee_path_baseline: true
-      Queue Size: 100
-      Topic: /bartender/ee_path_baseline
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /bartender/ee_path
       Value: true
   Enabled: true
   Global Options:
@@ -108,42 +98,13 @@ Visualization Manager:
     - Class: rviz_default_plugins/FocusCamera
     - Class: rviz_default_plugins/Measure
       Line color: 128; 128; 0
-    - Class: rviz_default_plugins/SetInitialPose
-      Covariance x: 0.25
-      Covariance y: 0.25
-      Covariance yaw: 0.06853891909122467
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /initialpose
-    - Class: rviz_default_plugins/SetGoal
-      Theta std Dev: 0.26179897785186768
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /goal_pose
-    - Class: rviz_default_plugins/PublishPoint
-      Single click: true
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /clicked_point
   Value: true
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
       Distance: 1.5
       Enable Stereo Rendering:
-        Stereo Eye Separation: 0.05999999865889549
+        Stereo Eye Separation: 0.06
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
@@ -152,10 +113,10 @@ Visualization Manager:
         Y: 0
         Z: 0.3
       Focal Shape Fixed Size: true
-      Focal Shape Size: 0.05000000074505806
+      Focal Shape Size: 0.05
       Invert Z Axis: false
       Name: Current View
-      Near Clip Distance: 0.009999999776482582
+      Near Clip Distance: 0.01
       Pitch: 0.5
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
@@ -167,13 +128,12 @@ Window Geometry:
   Height: 900
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd000000040000000000000156000002d4fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d000002d4000000c900fffffffb0000002000730065006c0065006300740069006f006e00200076006900650077030000004e00000085000000640000002600000003000000010000000600000006fc0000003d000002d4000000c90000000000000001000000010000000200000001
   Selection:
     collapsed: false
   Tool Properties:
     collapsed: false
   Views:
     collapsed: false
-  Width: 1600
+  Width: 1400
   X: 0
   Y: 0

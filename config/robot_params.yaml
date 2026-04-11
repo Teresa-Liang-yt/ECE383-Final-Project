@@ -159,8 +159,14 @@ optimization:
   weight_torque: 1.0
   weight_accel: 0.5
 
-  # Minimum total amplitude squared (prevents degenerate zero-motion solution)
-  min_amplitude_sq: 0.01
+  # Minimum total amplitude squared (prevents degenerate zero-motion solution).
+  # With max_coeff=0.026 and one nonzero pair (a,b)=(C,C): 2*0.026^2 = 0.00135 > 0.001
+  min_amplitude_sq: 0.001
 
-  # Maximum Fourier coefficient magnitude per joint per harmonic (rad)
-  max_coeff_amplitude: 0.5
+  # Maximum Fourier coefficient magnitude per joint per harmonic (rad).
+  # Guarantees velocity limits for all time — no separate velocity constraint needed.
+  # Derivation: each (a_jk, b_jk) pair contributes max velocity k*2*pi*sqrt(a^2+b^2).
+  # With box bound C: sqrt(a^2+b^2) <= sqrt(2)*C
+  # Sum over K=3 harmonics: max_qdot_j <= (1+2+3)*2*pi*sqrt(2)*C = 53.31*C
+  # For v_max=1.3963 rad/s: C <= 1.3963/53.31 = 0.0262 rad  → using 0.026 for safety margin
+  max_coeff_amplitude: 0.026

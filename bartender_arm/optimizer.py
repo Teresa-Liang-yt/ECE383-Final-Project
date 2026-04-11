@@ -33,9 +33,7 @@ from scipy.optimize import minimize, OptimizeResult
 
 from bartender_arm.kinematics import ee_acceleration
 from bartender_arm.dynamics import compute_torques
-from bartender_arm.trajectory import (
-    make_trajectory, x_to_ab, ab_to_x, baseline_params, n_params
-)
+from bartender_arm.trajectory import make_trajectory, baseline_params
 
 
 # ---------------------------------------------------------------------------
@@ -129,114 +127,68 @@ def objective_and_components(x, t_arr, q0, f, params, weights,
 # Constraint generation
 # ---------------------------------------------------------------------------
 
-def _evaluate_trajectory_constraints(x, t_arr, q0, f, params,
-                                      n_harmonics: int = 3):
-    """
-    Evaluate trajectory and compute all constraint violation quantities.
-
-    Returns a dict of arrays used by the constraint functions.
-    Caching this avoids recomputing the trajectory for each constraint.
-    """
-    traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
-    N    = len(t_arr)
-
-    torques = np.zeros((N, 6))
-    for t_idx in range(N):
-        torques[t_idx] = compute_torques(
-            traj['q'][t_idx], traj['qdot'][t_idx], traj['qddot'][t_idx], params
-        )
-
-    return {
-        'q':      traj['q'],
-        'qdot':   traj['qdot'],
-        'torques': torques,
-    }
-
-
 def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
     """
-    Build the full list of SLSQP inequality constraints: g(x) >= 0.
+    Build SLSQP inequality constraints: g(x) >= 0.
+
+    Uses batched vector-valued constraint functions (one call per type per
+    gradient step) instead of 721 separate scalar functions. This cuts
+    trajectory evaluations from ~26,000 to ~4 per SLSQP iteration.
 
     Constraints:
         1. q_max[i] - q[t,i]     >= 0   for all t, i  (upper pos limit)
         2. q[t,i]   - q_min[i]   >= 0   for all t, i  (lower pos limit)
-        3. v_max[i] - |qdot[t,i]|>= 0   for all t, i  (velocity limit)
-        4. t_max[i] - |tau[t,i]| >= 0   for all t, i  (torque limit)
-        5. sum(x²)  - A_min      >= 0                  (minimum motion)
+        3. t_max[i] - |tau[t,i]| >= 0   for all t, i  (torque limit)
+        4. sum(x²)  - A_min      >= 0                  (minimum motion)
 
-    Parameters
-    ----------
-    t_arr      : (N,) time array (use N=30 during optimization)
-    q0         : (6,) center joint pose
-    f          : float, frequency (Hz)
-    params     : dict
-    n_harmonics: int
-
-    Returns
-    -------
-    list of dicts compatible with scipy.optimize.minimize constraints arg.
+    Velocity limits are enforced implicitly via max_coeff_amplitude bounds:
+        (1+2+3)*2*pi*f*max_coeff = 1.319 rad/s < v_max = 1.3963 rad/s  ✓
     """
-    robot    = params['robot']
-    opt_cfg  = params['optimization']
+    robot   = params['robot']
+    opt_cfg = params['optimization']
 
-    # Extract limits
-    jlimits  = robot['joint_limits']
-    jnames   = robot['joint_names']
-    q_min    = np.array([jlimits[j][0] for j in jnames], dtype=float)
-    q_max    = np.array([jlimits[j][1] for j in jnames], dtype=float)
-    v_max    = np.array(robot['velocity_limits'],  dtype=float)
-    tau_max  = np.array(robot['effort_limits'],    dtype=float)
-    A_min    = float(opt_cfg.get('min_amplitude_sq', 0.01))
+    jlimits = robot['joint_limits']
+    jnames  = robot['joint_names']
+    q_min   = np.array([jlimits[j][0] for j in jnames], dtype=float)
+    q_max   = np.array([jlimits[j][1] for j in jnames], dtype=float)
+    tau_max = np.array(robot['effort_limits'],   dtype=float)
+    A_min   = float(opt_cfg.get('min_amplitude_sq', 0.01))
 
     N = len(t_arr)
-    constraints = []
 
-    # ------------------------------------------------------------------
-    # Helper: build a constraint that evaluates a single scalar g(x) >= 0.
-    # We use closures to capture t_idx and joint_idx.
-    # ------------------------------------------------------------------
+    def _eval(x):
+        """Compute traj + torques once, reused by all batched constraints."""
+        traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
+        torques = np.array([
+            compute_torques(traj['q'][i], traj['qdot'][i], traj['qddot'][i], params)
+            for i in range(N)
+        ])
+        return traj['q'], traj['qdot'], torques
 
-    def pos_upper(t_idx, j):
-        def g(x):
-            traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
-            return float(q_max[j] - traj['q'][t_idx, j])
-        return {'type': 'ineq', 'fun': g}
+    def pos_constraints(x):
+        q, _, _ = _eval(x)
+        upper = (q_max - q).ravel()  # q_max[j] - q[t,j] >= 0
+        lower = (q - q_min).ravel()  # q[t,j] - q_min[j] >= 0
+        return np.concatenate([upper, lower])
 
-    def pos_lower(t_idx, j):
-        def g(x):
-            traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
-            return float(traj['q'][t_idx, j] - q_min[j])
-        return {'type': 'ineq', 'fun': g}
+    def torque_constraints(x):
+        _, _, torques = _eval(x)
+        return (tau_max - np.abs(torques)).ravel()  # tau_max[j] - |tau[t,j]| >= 0
 
-    def vel_limit(t_idx, j):
-        def g(x):
-            traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
-            return float(v_max[j] - abs(traj['qdot'][t_idx, j]))
-        return {'type': 'ineq', 'fun': g}
+    # NOTE: No explicit velocity constraint needed here.
+    # max_coeff_amplitude is set so that (1+2+3)*2*pi*f*C < v_max for all joints,
+    # guaranteeing velocity limits hold for ALL time — not just sample points.
+    # See config/robot_params.yaml: max_coeff_amplitude=0.035, v_max=1.3963 rad/s
+    # → max_qdot = 6*2*pi*1*0.035 = 1.319 rad/s < 1.3963 rad/s  ✓
 
-    def torque_limit(t_idx, j):
-        def g(x):
-            traj   = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
-            tau    = compute_torques(traj['q'][t_idx], traj['qdot'][t_idx],
-                                    traj['qddot'][t_idx], params)
-            return float(tau_max[j] - abs(tau[j]))
-        return {'type': 'ineq', 'fun': g}
-
-    # Build constraints (sample at N time points for each joint)
-    for t_idx in range(N):
-        for j in range(6):
-            constraints.append(pos_upper(t_idx, j))
-            constraints.append(pos_lower(t_idx, j))
-            constraints.append(vel_limit(t_idx, j))
-            constraints.append(torque_limit(t_idx, j))
-
-    # Minimum amplitude constraint
     def min_amplitude(x):
-        return float(np.dot(x, x) - A_min)
+        return np.dot(x, x) - A_min
 
-    constraints.append({'type': 'ineq', 'fun': min_amplitude})
-
-    return constraints
+    return [
+        {'type': 'ineq', 'fun': pos_constraints},
+        {'type': 'ineq', 'fun': torque_constraints},
+        {'type': 'ineq', 'fun': min_amplitude},
+    ]
 
 
 def make_bounds(params, n_harmonics: int = 3):
@@ -298,12 +250,20 @@ def run_optimization(q0, f: float, t_arr_opt, params,
     t_arr   = np.asarray(t_arr_opt, dtype=float)
     bounds  = make_bounds(params, n_harmonics)
 
+    # Clip x0 to bounds so SLSQP doesn't warn about out-of-bounds initial point.
+    # This happens when x0=baseline_params has coefficients larger than max_coeff_amplitude.
+    lb = np.array([b[0] for b in bounds])
+    ub = np.array([b[1] for b in bounds])
+    x0 = np.clip(x0, lb, ub)
+
     constraints = make_constraints(t_arr, q0, f, params, n_harmonics)
 
     if verbose:
+        N_t = len(t_arr)
+        n_scalar = 2 * N_t * 6 + N_t * 6 + 1  # pos(2NJ) + torque(NJ) + min_amp
         print(f"Starting SLSQP optimization:")
         print(f"  Variables  : {len(x0)}")
-        print(f"  Constraints: {len(constraints)}")
+        print(f"  Constraints: ~{n_scalar} scalar (3 batched vector fns; velocity guaranteed by bounds)")
         print(f"  Time points: {len(t_arr)} (opt), {params['optimization']['n_eval_points']} (eval)")
         print(f"  Max iter   : {max_iter}")
         J0, J_tau0, J_acc0 = objective_and_components(

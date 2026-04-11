@@ -73,7 +73,6 @@ def generate_launch_description():
             'robot_type':  'gen3_lite',
             'dof':         '6',
             'sim_gazebo':  'true',
-            'gripper':     'gen3_lite_2f',
             'launch_rviz': 'false',   # we launch our own RViz
         }.items(),
     )

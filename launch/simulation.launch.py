@@ -49,9 +49,9 @@ def generate_launch_description():
     # -----------------------------------------------------------------------
     trajectory_mode_arg = DeclareLaunchArgument(
         'trajectory_mode',
-        default_value='optimized',
-        description='Trajectory to publish: "optimized" or "baseline"',
-        choices=['optimized', 'baseline'],
+        default_value='amplitude',
+        description='Trajectory mode: amplitude (0.25 Hz large motion), frequency (1.0 Hz fast), baseline',
+        choices=['amplitude', 'frequency', 'baseline'],
     )
 
     # -----------------------------------------------------------------------

@@ -178,8 +178,8 @@ def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
     # NOTE: No explicit velocity constraint needed here.
     # max_coeff_amplitude is set so that (1+2+3)*2*pi*f*C < v_max for all joints,
     # guaranteeing velocity limits hold for ALL time — not just sample points.
-    # See config/robot_params.yaml: max_coeff_amplitude=0.035, v_max=1.3963 rad/s
-    # → max_qdot = 6*2*pi*1*0.035 = 1.319 rad/s < 1.3963 rad/s  ✓
+    # See config/robot_params.yaml: max_coeff_amplitude=0.10, f=0.25 Hz, v_max=1.3963 rad/s
+    # → max_qdot = 6*2*pi*0.25*sqrt(2)*0.10 = 1.333 rad/s < 1.3963 rad/s  ✓
 
     def min_amplitude(x):
         return np.dot(x, x) - A_min
@@ -191,21 +191,26 @@ def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
     ]
 
 
-def make_bounds(params, n_harmonics: int = 3):
+def make_bounds(params, n_harmonics: int = 3, max_coeff: float = None):
     """
     Build variable bounds for SLSQP.
 
     Limits each Fourier coefficient to [-max_coeff, +max_coeff].
-    This is a soft bound that helps the optimizer stay in a physically
-    meaningful region and converges faster than unconstrained.
+
+    Parameters
+    ----------
+    max_coeff : float, optional
+        Override for the coefficient bound. If None, reads from
+        params['optimization']['max_coeff_amplitude'].
 
     Returns
     -------
     list of (lb, ub) tuples, length 2*6*n_harmonics = 36
     """
-    max_c = float(params['optimization'].get('max_coeff_amplitude', 0.5))
+    if max_coeff is None:
+        max_coeff = float(params['optimization'].get('max_coeff_amplitude', 0.5))
     total = 2 * 6 * n_harmonics
-    return [(-max_c, max_c)] * total
+    return [(-max_coeff, max_coeff)] * total
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +219,8 @@ def make_bounds(params, n_harmonics: int = 3):
 
 def run_optimization(q0, f: float, t_arr_opt, params,
                      x0=None, n_harmonics: int = 3,
-                     verbose: bool = True) -> OptimizeResult:
+                     verbose: bool = True,
+                     max_coeff: float = None) -> OptimizeResult:
     """
     Run constrained SLSQP optimization to find the best mixing trajectory.
 
@@ -248,7 +254,7 @@ def run_optimization(q0, f: float, t_arr_opt, params,
 
     q0      = np.asarray(q0, dtype=float)
     t_arr   = np.asarray(t_arr_opt, dtype=float)
-    bounds  = make_bounds(params, n_harmonics)
+    bounds  = make_bounds(params, n_harmonics, max_coeff=max_coeff)
 
     # Clip x0 to bounds so SLSQP doesn't warn about out-of-bounds initial point.
     # This happens when x0=baseline_params has coefficients larger than max_coeff_amplitude.

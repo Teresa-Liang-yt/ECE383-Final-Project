@@ -141,10 +141,26 @@ trajectory:
   # a comfortable "mixing height" (~0.3m above base, 0.3m out)
   mixing_center_joints: [0.0, 0.3491, -0.5236, 0.0, 0.8727, 0.0]
 
-  frequency: 1.0       # Hz — mixing cycles per second
-  duration: 6.0        # seconds — total trajectory length (must be integer multiple of 1/frequency)
   n_waypoints: 120     # waypoints for ROS JointTrajectory message
-  n_harmonics: 3       # number of Fourier harmonics per joint
+
+# Two optimization modes with different frequency/amplitude tradeoffs.
+# Velocity safety check: max_qdot = (1+2+3)*2*pi*f*sqrt(2)*C = 53.31*f*C < v_max=1.3963 rad/s
+trajectory_modes:
+  amplitude:
+    description: "Large slow sweeping motion — max joint displacement, low frequency"
+    frequency: 0.25             # Hz
+    duration: 8.0               # seconds (integer multiple of 1/frequency)
+    n_harmonics: 3
+    max_coeff_amplitude: 0.10   # rad — 53.31*0.25*0.10 = 1.333 rad/s < 1.396 rad/s ✓
+    coeffs_file: amplitude_coeffs.npy
+
+  frequency:
+    description: "Fast tight mixing — max oscillation frequency, small amplitude"
+    frequency: 1.0              # Hz
+    duration: 6.0               # seconds
+    n_harmonics: 3
+    max_coeff_amplitude: 0.026  # rad — 53.31*1.0*0.026 = 1.386 rad/s < 1.396 rad/s ✓
+    coeffs_file: frequency_coeffs.npy
 
 optimization:
   method: SLSQP
@@ -163,10 +179,6 @@ optimization:
   # With max_coeff=0.026 and one nonzero pair (a,b)=(C,C): 2*0.026^2 = 0.00135 > 0.001
   min_amplitude_sq: 0.001
 
-  # Maximum Fourier coefficient magnitude per joint per harmonic (rad).
-  # Guarantees velocity limits for all time — no separate velocity constraint needed.
-  # Derivation: each (a_jk, b_jk) pair contributes max velocity k*2*pi*sqrt(a^2+b^2).
-  # With box bound C: sqrt(a^2+b^2) <= sqrt(2)*C
-  # Sum over K=3 harmonics: max_qdot_j <= (1+2+3)*2*pi*sqrt(2)*C = 53.31*C
-  # For v_max=1.3963 rad/s: C <= 1.3963/53.31 = 0.0262 rad  → using 0.026 for safety margin
-  max_coeff_amplitude: 0.026
+  # max_coeff_amplitude is set per trajectory_mode (see above).
+  # Default here is unused when --mode is specified; kept for backward compatibility.
+  max_coeff_amplitude: 0.10

@@ -4,22 +4,18 @@ run_optimization.py — Standalone offline optimization script.
 
 No ROS2 required. Run directly with:
     cd ECE383-Final-Project
-    python3 scripts/run_optimization.py
+    python3 scripts/run_optimization.py --mode amplitude
+    python3 scripts/run_optimization.py --mode frequency
 
-Workflow:
-    1. Load robot parameters from config/robot_params.yaml
-    2. Evaluate baseline (naive) trajectory metrics
-    3. Run SLSQP optimization to find the improved trajectory
-    4. Evaluate optimized trajectory metrics
-    5. Print comparison table
-    6. Generate 4-panel matplotlib comparison figure
-    7. Save optimized trajectory to CSV for use by ROS2 nodes
+Modes (defined in config/robot_params.yaml -> trajectory_modes):
+    amplitude  — low frequency (0.25 Hz), large coefficients (0.10 rad) → big sweeping motion
+    frequency  — high frequency (1.0 Hz), small coefficients (0.026 rad) → fast tight mixing
 
 Output files (written to current directory or --output-dir):
-    comparison_plots.png       — 4-panel figure
-    baseline_trajectory.csv    — baseline q, qdot, qddot, t
-    optimized_trajectory.csv   — optimized q, qdot, qddot, t
-    optimized_coeffs.npy       — optimal coefficient vector (for ROS nodes)
+    comparison_plots_<mode>.png    — 4-panel figure
+    baseline_trajectory.csv        — naive baseline trajectory + torques
+    optimized_trajectory_<mode>.csv
+    <mode>_coeffs.npy              — optimal coefficients for ROS trajectory publisher
 """
 
 import os
@@ -105,12 +101,12 @@ def run_verification(params: dict, verbose: bool = True):
 # Evaluate a trajectory and collect all metrics
 # ---------------------------------------------------------------------------
 
-def evaluate_trajectory(x, f, t_arr, q0, params, label: str = "") -> dict:
+def evaluate_trajectory(x, f, t_arr, q0, params, label: str = "",
+                        n_harmonics: int = 3) -> dict:
     """
     Evaluate trajectory x and return metrics dict with raw arrays.
     """
-    traj = make_trajectory(x, f, t_arr, q0,
-                           n_harmonics=params['trajectory']['n_harmonics'])
+    traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
     N = len(t_arr)
 
     torques   = np.zeros((N, 6))
@@ -312,6 +308,9 @@ def main():
     parser = argparse.ArgumentParser(
         description='Offline mixing trajectory optimization for Kinova Gen3 Lite')
     parser.add_argument(
+        '--mode', default='amplitude', choices=['amplitude', 'frequency'],
+        help='Trajectory mode: amplitude (0.25 Hz, 0.10 rad) or frequency (1.0 Hz, 0.026 rad)')
+    parser.add_argument(
         '--config', default=None,
         help='Path to robot_params.yaml (default: auto-detect from script location)')
     parser.add_argument(
@@ -325,7 +324,7 @@ def main():
         help='Skip optimization, only evaluate baseline')
     parser.add_argument(
         '--load-coeffs', default=None,
-        help='Load previously saved optimized_coeffs.npy instead of re-optimizing')
+        help='Load previously saved coefficients .npy instead of re-optimizing')
     args = parser.parse_args()
 
     # Resolve config path
@@ -342,23 +341,22 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # -----------------------------------------------------------------------
-    # Verification
+    # Resolve mode-specific trajectory parameters
     # -----------------------------------------------------------------------
-    if not args.skip_verification:
-        run_verification(params, verbose=True)
+    mode     = args.mode
+    mode_cfg = params['trajectory_modes'][mode]
+    opt_cfg  = params['optimization']
 
-    # -----------------------------------------------------------------------
-    # Trajectory parameters
-    # -----------------------------------------------------------------------
-    traj_cfg    = params['trajectory']
-    opt_cfg     = params['optimization']
+    f          = float(mode_cfg['frequency'])
+    duration   = float(mode_cfg['duration'])
+    n_harm     = int(mode_cfg['n_harmonics'])
+    max_coeff  = float(mode_cfg['max_coeff_amplitude'])
+    N_opt      = int(opt_cfg['n_opt_points'])
+    N_eval     = int(opt_cfg['n_eval_points'])
+    q0         = np.array(params['trajectory']['mixing_center_joints'], dtype=float)
 
-    f           = float(traj_cfg['frequency'])
-    duration    = float(traj_cfg['duration'])
-    n_harm      = int(traj_cfg['n_harmonics'])
-    N_opt       = int(opt_cfg['n_opt_points'])
-    N_eval      = int(opt_cfg['n_eval_points'])
-    q0          = np.array(traj_cfg['mixing_center_joints'], dtype=float)
+    print(f"Mode: {mode}  |  f={f} Hz, duration={duration}s, "
+          f"max_coeff={max_coeff} rad, n_harmonics={n_harm}")
 
     t_opt  = np.linspace(0, duration, N_opt,  endpoint=False)
     t_eval = np.linspace(0, duration, N_eval, endpoint=False)
@@ -372,7 +370,7 @@ def main():
     x_baseline = baseline_params(n_joints=6, n_harmonics=n_harm)
     t0 = time.time()
     baseline_data = evaluate_trajectory(
-        x_baseline, f, t_eval, q0, params, label='Baseline')
+        x_baseline, f, t_eval, q0, params, label='Baseline', n_harmonics=n_harm)
     print(f"Evaluation time: {time.time()-t0:.2f}s")
 
     # Constraint check for baseline
@@ -396,7 +394,8 @@ def main():
         t0 = time.time()
         result = run_optimization(
             q0=q0, f=f, t_arr_opt=t_opt, params=params,
-            x0=x_baseline, n_harmonics=n_harm, verbose=True)
+            x0=x_baseline, n_harmonics=n_harm, verbose=True,
+            max_coeff=max_coeff)
         elapsed = time.time() - t0
         print(f"\nOptimization wall time: {elapsed:.1f}s")
         x_opt = result.x
@@ -412,7 +411,7 @@ def main():
     print("=" * 60)
     t0 = time.time()
     optimized_data = evaluate_trajectory(
-        x_opt, f, t_eval, q0, params, label='Optimized')
+        x_opt, f, t_eval, q0, params, label='Optimized', n_harmonics=n_harm)
     print(f"Evaluation time: {time.time()-t0:.2f}s")
 
     # Constraint check for optimized
@@ -436,14 +435,14 @@ def main():
     # -----------------------------------------------------------------------
     # Save outputs
     # -----------------------------------------------------------------------
-    plot_path      = os.path.join(args.output_dir, 'comparison_plots.png')
-    baseline_csv   = os.path.join(args.output_dir, 'baseline_trajectory.csv')
-    optimized_csv  = os.path.join(args.output_dir, 'optimized_trajectory.csv')
-    coeffs_path    = os.path.join(args.output_dir, 'optimized_coeffs.npy')
+    plot_path     = os.path.join(args.output_dir, f'comparison_plots_{mode}.png')
+    baseline_csv  = os.path.join(args.output_dir, 'baseline_trajectory.csv')
+    opt_csv       = os.path.join(args.output_dir, f'optimized_trajectory_{mode}.csv')
+    coeffs_path   = os.path.join(args.output_dir, mode_cfg['coeffs_file'])
 
     plot_comparison(baseline_data, optimized_data, params, plot_path)
     save_trajectory_csv(baseline_data['traj'],  baseline_data['torques'],  baseline_csv)
-    save_trajectory_csv(optimized_data['traj'], optimized_data['torques'], optimized_csv)
+    save_trajectory_csv(optimized_data['traj'], optimized_data['torques'], opt_csv)
 
     np.save(coeffs_path, x_opt)
     print(f"Saved optimized coefficients → {coeffs_path}")

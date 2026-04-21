@@ -74,37 +74,44 @@ class TrajectoryPublisherNode(Node):
         # Build trajectory
         # ---------------------------------------------------------------
         traj_cfg   = self.params['trajectory']
-        self.f     = float(traj_cfg['frequency'])
-        duration   = float(traj_cfg['duration'])
         n_wp       = int(traj_cfg['n_waypoints'])
-        n_harm     = int(traj_cfg['n_harmonics'])
         self.q0    = np.array(traj_cfg['mixing_center_joints'], dtype=float)
 
-        t_dense = np.linspace(0.0, duration, n_wp * 4, endpoint=False)
+        # Resolve mode-specific parameters
+        modes = self.params.get('trajectory_modes', {})
+        if mode in ('amplitude', 'frequency'):
+            if mode not in modes:
+                self.get_logger().error(f"trajectory_mode '{mode}' not found in config")
+                raise KeyError(mode)
+            mode_cfg   = modes[mode]
+            self.f     = float(mode_cfg['frequency'])
+            duration   = float(mode_cfg['duration'])
+            n_harm     = int(mode_cfg['n_harmonics'])
+            coeffs_file = mode_cfg['coeffs_file']
 
-        if mode == 'optimized':
             if not coeff_path:
-                # Look next to the package share dir (user copied it there)
                 share_dir  = get_package_share_directory('bartender_arm')
-                coeff_path = os.path.join(share_dir, 'optimized_coeffs.npy')
-                # Also check workspace root
-                if not os.path.isfile(coeff_path):
-                    coeff_path = os.path.join(
-                        os.path.dirname(share_dir), '..', '..', '..', 'optimized_coeffs.npy')
-                    coeff_path = os.path.normpath(coeff_path)
+                coeff_path = os.path.join(share_dir, coeffs_file)
 
             if os.path.isfile(coeff_path):
                 x = np.load(coeff_path)
-                self.get_logger().info(f'Loaded optimized coefficients from {coeff_path}')
+                self.get_logger().info(
+                    f'Mode={mode} | f={self.f} Hz | loaded coefficients from {coeff_path}')
             else:
                 self.get_logger().warn(
-                    'optimized_coeffs.npy not found — using baseline. '
-                    'Run scripts/run_optimization.py first and copy the .npy file here.')
+                    f'{coeffs_file} not found — using baseline. '
+                    f'Run: python3 scripts/run_optimization.py --mode {mode}')
                 x = baseline_params(n_joints=6, n_harmonics=n_harm)
         else:
+            # baseline: use amplitude mode params with zero coefficients
+            mode_cfg   = modes.get('amplitude', {})
+            self.f     = float(mode_cfg.get('frequency', 0.25))
+            duration   = float(mode_cfg.get('duration', 8.0))
+            n_harm     = int(mode_cfg.get('n_harmonics', 3))
             x = baseline_params(n_joints=6, n_harmonics=n_harm)
-            self.get_logger().info('Using baseline trajectory')
+            self.get_logger().info(f'Mode=baseline | f={self.f} Hz')
 
+        t_dense     = np.linspace(0.0, duration, n_wp * 4, endpoint=False)
         traj_dense  = make_trajectory(x, self.f, t_dense, self.q0, n_harmonics=n_harm)
         self.traj   = sample_trajectory(traj_dense, n_wp)
         self.duration = duration

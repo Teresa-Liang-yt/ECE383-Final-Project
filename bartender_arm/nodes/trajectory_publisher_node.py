@@ -143,10 +143,11 @@ class TrajectoryPublisherNode(Node):
         t_arr = self.traj['t']
         t_offset = 0.5  # give controller time to receive before first waypoint
 
+        last_idx = len(t_arr) - 1
         for idx in range(len(t_arr)):
             pt = JointTrajectoryPoint()
             pt.positions  = q[idx].tolist()
-            pt.velocities = qdot[idx].tolist()
+            pt.velocities = qdot[idx].tolist() if idx < last_idx else [0.0] * 6
             t_sec   = float(t_arr[idx]) + t_offset
             sec_int = int(t_sec)
             nanosec = int(round((t_sec - sec_int) * 1e9))

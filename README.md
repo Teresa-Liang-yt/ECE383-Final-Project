@@ -240,6 +240,32 @@ cat /tmp/bartender_metrics.csv                # full log (inside container)
 
 ---
 
+## Troubleshooting
+
+### `error: Invalid parameter "gripper"` on launch
+
+**Symptom:** Launching the simulation fails immediately with:
+```
+error: Invalid parameter "gripper"
+when instantiating macro: load_arm (gen3_lite_macro.xacro)
+```
+
+**Cause:** The `kortex_bringup` launch file passes `gripper:=gen3_lite_2f` to xacro, but the `gen3_lite_macro.xacro` in this Docker image does not declare a `gripper` parameter — a version mismatch between the two packages.
+
+**Fix:** Add the missing top-level arg declaration to the xacro file (one-time, inside the Docker container):
+
+```bash
+XACRO=/root/workspaces/install/kortex_description/share/kortex_description/arms/gen3_lite/6dof/urdf/gen3_lite_macro.xacro
+
+sed -i 's|<xacro:macro name="load_arm"|<xacro:arg name="gripper" default="gen3_lite_2f"/>\n  <xacro:macro name="load_arm"|' $XACRO
+```
+
+Then re-run the launch normally. You do not need to rebuild — the change takes effect immediately since xacro reads the file at launch time.
+
+> Note: this edit is made inside the container's install directory. If you restart the container with `--rm`, the container is wiped and you will need to re-run this command the next session.
+
+---
+
 ## Engineering Design
 
 ### Trajectory Parameterization

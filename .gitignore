@@ -16,3 +16,6 @@ log/
 
 # macOS
 .DS_Store
+
+# Report
+*.docx

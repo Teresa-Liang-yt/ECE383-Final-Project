@@ -70,10 +70,14 @@ def generate_launch_description():
             os.path.join(kortex_bringup, 'launch', 'kortex_sim_control.launch.py')
         ),
         launch_arguments={
-            'robot_type':  'gen3_lite',
-            'dof':         '6',
-            'sim_gazebo':  'true',
-            'launch_rviz': 'false',   # we launch our own RViz
+            'robot_type':        'gen3_lite',
+            'dof':               '6',
+            'gripper':           'gen3_lite_2f',
+            'robot_name':        'gen3_lite',
+            'sim_gazebo':        'true',
+            'launch_rviz':       'false',
+            'use_sim_time':      'true',
+            'robot_controller':  'joint_trajectory_controller',
         }.items(),
     )
 
@@ -87,7 +91,10 @@ def generate_launch_description():
         package='bartender_arm',
         executable='metrics_subscriber_node',
         name='metrics_subscriber',
-        parameters=[{'log_path': '/tmp/bartender_metrics.csv'}],
+        parameters=[{
+            'log_path': '/tmp/bartender_metrics.csv',
+            'use_sim_time': True,
+        }],
         output='screen',
         emulate_tty=True,
     )
@@ -123,6 +130,7 @@ def generate_launch_description():
         parameters=[{
             'trajectory_mode': LaunchConfiguration('trajectory_mode'),
             'loop_trajectory': True,
+            'use_sim_time': True,
         }],
         output='screen',
         emulate_tty=True,

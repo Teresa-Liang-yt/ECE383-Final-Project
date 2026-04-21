@@ -85,22 +85,22 @@ git push
 
 ### Pull on the school Ubuntu machine (outside Docker)
 
+The first pull may fail with a "dubious ownership" error because the mounted volume is owned by a different user than the container's git. Fix it once:
+
+```bash
+git config --global --add safe.directory /root/workspaces/ECE383-Final-Project
+```
+
+Then pull normally:
+
 ```bash
 cd ~/workspaces/ECE383-Final-Project
 git pull
 ```
 
-### Transfer optimized coefficients separately
+### Optimized coefficients
 
-`optimized_coeffs.npy` is listed in `.gitignore` (binary files aren't tracked), so it will **not** sync via git. After running the optimization on Mac, copy it to the school machine manually:
-
-```bash
-# Run this on Mac — replace <netid> and <school-machine-hostname>
-scp /Users/teresaliang/Desktop/ECE383/ECE383-Final-Project/optimized_coeffs.npy \
-    <netid>@<school-machine-hostname>:~/workspaces/ECE383-Final-Project/optimized_coeffs.npy
-```
-
-Alternatively, run the optimization directly inside Docker (scipy is available there too) — see the `--no-optimize` / `--load-coeffs` flags in Part 1.
+`optimized_coeffs.npy` is force-tracked in git (added with `git add -f` despite the `.gitignore` entry), so it **will** sync automatically via `git pull`. No separate file transfer is needed.
 
 ---
 
@@ -132,9 +132,21 @@ terminator &
 
 ### One-time setup (inside the container)
 
-#### 1. Create the colcon symlink
+#### 1. Fix xacro gripper parameter mismatch
 
-Colcon requires source packages to live under a `src/` directory. Create a symlink so it can find the project:
+The Docker image has a version mismatch: `kortex_bringup` passes `gripper:=gen3_lite_2f` to xacro, but `gen3_lite_macro.xacro` does not declare that parameter. Patch it once:
+
+```bash
+XACRO=/opt/kortex_ws/install/kortex_description/share/kortex_description/arms/gen3_lite/6dof/urdf/gen3_lite_macro.xacro
+
+sed -i 's|<xacro:macro name="load_arm"|<xacro:arg name="gripper" default="gen3_lite_2f"/>\n  <xacro:macro name="load_arm"|' $XACRO
+```
+
+> This edits a file inside the container. If you restart with `--rm`, re-run this command next session.
+
+#### 2. Create the colcon symlink
+
+Colcon requires source packages to live under a `src/` directory:
 
 ```bash
 mkdir -p ~/workspaces/src
@@ -142,13 +154,13 @@ ln -sfn ~/workspaces/ECE383-Final-Project ~/workspaces/src/bartender_arm
 ls -la ~/workspaces/src/bartender_arm   # verify: should point to ECE383-Final-Project
 ```
 
-#### 2. Install Python dependencies
+#### 3. Install Python dependencies
 
 ```bash
 pip3 install scipy numpy matplotlib pyyaml
 ```
 
-#### 3. Build the package
+#### 4. Build the package
 
 The Docker image already has `kortex_description`, `kortex_bringup`, and all Kinova packages pre-installed. Only build the custom package:
 
@@ -167,7 +179,7 @@ echo "source /root/workspaces/install/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-#### 4. Copy optimized coefficients into the install directory
+#### 5. Copy optimized coefficients into the install directory
 
 This step must happen **after** `colcon build` (the build creates the install directory). The trajectory publisher looks for the file at this path:
 
@@ -176,7 +188,19 @@ cp ~/workspaces/ECE383-Final-Project/optimized_coeffs.npy \
    ~/workspaces/install/bartender_arm/share/bartender_arm/optimized_coeffs.npy
 ```
 
-> If you rebuild with `colcon build`, the install directory is refreshed and this file may be overwritten — re-run the `cp` command after each rebuild.
+> If you rebuild with `colcon build`, re-run this `cp` command — colcon refreshes the install directory and overwrites it.
+
+#### After every `git pull`
+
+If you pull new code, rebuild and re-copy the coefficients:
+
+```bash
+cd ~/workspaces
+colcon build --packages-select bartender_arm
+source install/setup.bash
+cp ~/workspaces/ECE383-Final-Project/optimized_coeffs.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/optimized_coeffs.npy
+```
 
 ---
 
@@ -205,7 +229,9 @@ This automatically starts Gazebo, then RViz after a 5-second delay, then the tra
 **Pane 1 — Gazebo + ros2_control:**
 ```bash
 ros2 launch kortex_bringup kortex_sim_control.launch.py \
-  robot_type:=gen3_lite dof:=6 sim_gazebo:=true launch_rviz:=false
+  robot_type:=gen3_lite dof:=6 gripper:=gen3_lite_2f robot_name:=gen3_lite \
+  sim_gazebo:=true launch_rviz:=false use_sim_time:=true \
+  robot_controller:=joint_trajectory_controller
 ```
 
 **Pane 2 — RViz (wait ~5s for Gazebo to finish loading):**
@@ -240,31 +266,6 @@ cat /tmp/bartender_metrics.csv                # full log (inside container)
 
 ---
 
-## Troubleshooting
-
-### `error: Invalid parameter "gripper"` on launch
-
-**Symptom:** Launching the simulation fails immediately with:
-```
-error: Invalid parameter "gripper"
-when instantiating macro: load_arm (gen3_lite_macro.xacro)
-```
-
-**Cause:** The `kortex_bringup` launch file passes `gripper:=gen3_lite_2f` to xacro, but the `gen3_lite_macro.xacro` in this Docker image does not declare a `gripper` parameter — a version mismatch between the two packages.
-
-**Fix:** Add the missing top-level arg declaration to the xacro file (one-time, inside the Docker container):
-
-```bash
-XACRO=/root/workspaces/install/kortex_description/share/kortex_description/arms/gen3_lite/6dof/urdf/gen3_lite_macro.xacro
-
-sed -i 's|<xacro:macro name="load_arm"|<xacro:arg name="gripper" default="gen3_lite_2f"/>\n  <xacro:macro name="load_arm"|' $XACRO
-```
-
-Then re-run the launch normally. You do not need to rebuild — the change takes effect immediately since xacro reads the file at launch time.
-
-> Note: this edit is made inside the container's install directory. If you restart the container with `--rm`, the container is wiped and you will need to re-run this command the next session.
-
----
 
 ## Engineering Design
 

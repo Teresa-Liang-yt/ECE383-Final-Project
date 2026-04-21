@@ -72,11 +72,10 @@ python3 scripts/run_optimization.py --output-dir ./results/
 
 ---
 
-## Part 2 — Sync to School Machine via Git
+## Part 2 — Sync Code and Coefficients to School Machine
 
-Push changes from Mac so the Docker container gets them.
+### Push code from Mac
 
-**On Mac:**
 ```bash
 cd /Users/teresaliang/Desktop/ECE383/ECE383-Final-Project
 git add -A
@@ -84,20 +83,35 @@ git commit -m "your message"
 git push
 ```
 
-**On the school Ubuntu machine (outside Docker):**
+### Pull on the school Ubuntu machine (outside Docker)
+
 ```bash
 cd ~/workspaces/ECE383-Final-Project
 git pull
 ```
 
+### Transfer optimized coefficients separately
+
+`optimized_coeffs.npy` is listed in `.gitignore` (binary files aren't tracked), so it will **not** sync via git. After running the optimization on Mac, copy it to the school machine manually:
+
+```bash
+# Run this on Mac — replace <netid> and <school-machine-hostname>
+scp /Users/teresaliang/Desktop/ECE383/ECE383-Final-Project/optimized_coeffs.npy \
+    <netid>@<school-machine-hostname>:~/workspaces/ECE383-Final-Project/optimized_coeffs.npy
+```
+
+Alternatively, run the optimization directly inside Docker (scipy is available there too) — see the `--no-optimize` / `--load-coeffs` flags in Part 1.
+
 ---
 
 ## Part 3 — Docker Container Setup
 
+> All steps below run on the **school Ubuntu machine** unless noted.
+
 ### Start the container
 
 ```bash
-# On the school Ubuntu machine:
+# Allow Docker to open GUI windows (do this once per host login session)
 xhost +local:docker
 
 docker run --rm -it \
@@ -109,34 +123,34 @@ docker run --rm -it \
   gitlab-registry.oit.duke.edu/introtorobotics/mems-robotics-toolkit:kinova-jazzy-latest bash
 ```
 
-Inside the container, open a multi-pane terminal:
+> `--rm` means the container is deleted when you exit. The `~/workspaces` volume persists on the host, so project files survive, but **anything installed inside the container (e.g. pip packages) is lost on restart** — you'll need to reinstall them each session.
+
+To open a multi-pane terminal inside the container:
 ```bash
 terminator &
 ```
 
-### Create symlink (first time only)
+### One-time setup (inside the container)
 
-The project lives at `~/workspaces/ECE383-Final-Project/` on the host (mounted at the same path inside Docker). Colcon needs it under a `src/` directory:
+#### 1. Create the colcon symlink
+
+Colcon requires source packages to live under a `src/` directory. Create a symlink so it can find the project:
 
 ```bash
 mkdir -p ~/workspaces/src
 ln -sfn ~/workspaces/ECE383-Final-Project ~/workspaces/src/bartender_arm
+ls -la ~/workspaces/src/bartender_arm   # verify: should point to ECE383-Final-Project
 ```
 
-Verify:
-```bash
-ls -la ~/workspaces/src/bartender_arm   # should show the symlink target
-```
-
-### Install Python dependencies (first time only)
+#### 2. Install Python dependencies
 
 ```bash
 pip3 install scipy numpy matplotlib pyyaml
 ```
 
-### Build
+#### 3. Build the package
 
-The Docker image already has `kortex_description`, `kortex_bringup`, and other Kinova packages pre-installed. Only build the custom package:
+The Docker image already has `kortex_description`, `kortex_bringup`, and all Kinova packages pre-installed. Only build the custom package:
 
 ```bash
 cd ~/workspaces
@@ -145,50 +159,56 @@ colcon build --packages-select bartender_arm
 source install/setup.bash
 ```
 
-Add to `~/.bashrc` so you don't have to repeat it in every pane:
+Add both source lines to `~/.bashrc` so every new pane picks them up automatically:
 
 ```bash
 echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
 echo "source /root/workspaces/install/setup.bash" >> ~/.bashrc
+source ~/.bashrc
 ```
 
-### Copy optimized coefficients into the container
+#### 4. Copy optimized coefficients into the install directory
 
-After running the optimization on Mac, transfer `optimized_coeffs.npy` to the school machine and place it where the node will find it:
+This step must happen **after** `colcon build` (the build creates the install directory). The trajectory publisher looks for the file at this path:
 
 ```bash
-cp /path/to/optimized_coeffs.npy \
+cp ~/workspaces/ECE383-Final-Project/optimized_coeffs.npy \
    ~/workspaces/install/bartender_arm/share/bartender_arm/optimized_coeffs.npy
 ```
+
+> If you rebuild with `colcon build`, the install directory is refreshed and this file may be overwritten — re-run the `cp` command after each rebuild.
 
 ---
 
 ## Part 4 — Running the Simulation
 
-Source in every new terminal pane before running anything:
+> All commands below run **inside the Docker container**.
+
+Source ROS2 and the workspace overlay in **every new terminal pane** before running anything (skip if you added them to `~/.bashrc` already):
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/workspaces/install/setup.bash
 ```
 
-### Option A: One-command launch
+### Option A: One-command launch (recommended)
 
 ```bash
-ros2 launch bartender_arm simulation.launch.py                      # optimized (default)
+ros2 launch bartender_arm simulation.launch.py                       # optimized trajectory (default)
 ros2 launch bartender_arm simulation.launch.py trajectory_mode:=baseline
 ```
 
-This starts Gazebo, RViz (5s delay), metrics subscriber, and trajectory publisher (8s delay) automatically.
+This automatically starts Gazebo, then RViz after a 5-second delay, then the trajectory publisher after an 8-second delay. The metrics subscriber starts immediately.
 
 ### Option B: Manual launch (for debugging — use separate Terminator panes)
 
-**Pane 1 — Gazebo + controller:**
+**Pane 1 — Gazebo + ros2_control:**
 ```bash
 ros2 launch kortex_bringup kortex_sim_control.launch.py \
   robot_type:=gen3_lite dof:=6 sim_gazebo:=true launch_rviz:=false
 ```
 
-**Pane 2 — RViz (wait ~5s for Gazebo):**
+**Pane 2 — RViz (wait ~5s for Gazebo to finish loading):**
 ```bash
 ros2 run rviz2 rviz2 \
   -d ~/workspaces/install/bartender_arm/share/bartender_arm/rviz/bartender_arm.rviz
@@ -199,13 +219,13 @@ ros2 run rviz2 rviz2 \
 ros2 run bartender_arm metrics_subscriber_node
 ```
 
-**Pane 4 — Trajectory publisher (wait ~8s for controller):**
+**Pane 4 — Trajectory publisher (wait ~8s for the controller to be ready):**
 ```bash
 ros2 run bartender_arm trajectory_publisher_node \
   --ros-args -p trajectory_mode:=optimized
 ```
 
-> If the trajectory publisher can't find `optimized_coeffs.npy`, it falls back to baseline automatically and logs a warning.
+> If `optimized_coeffs.npy` is missing, the publisher falls back to the baseline trajectory and logs a warning — check the pane output if the arm isn't moving as expected.
 
 ### Monitor metrics in real-time
 
@@ -213,8 +233,10 @@ ros2 run bartender_arm trajectory_publisher_node \
 ros2 topic echo /bartender/joint_torques
 ros2 topic echo /bartender/ee_acceleration
 ros2 topic echo /bartender/metrics_summary    # [peak_torque, rms_torque, mean_ee_accel]
-cat /tmp/bartender_metrics.csv                # full log
+cat /tmp/bartender_metrics.csv                # full log (inside container)
 ```
+
+> Real-time `qddot` is estimated via finite difference over a 3-sample sliding window, spanning two time steps to reduce single-sample derivative noise. The offline optimization uses analytic derivatives and is unaffected.
 
 ---
 
@@ -267,3 +289,4 @@ Solver: `scipy.optimize.minimize` with `method='SLSQP'`, 3 batched vector-valued
 - [x] Constraint satisfaction verified — position, velocity, torque limits all satisfied
 - [x] ROS2 Gazebo + RViz simulation with trajectory execution
 - [x] Real-time metrics monitoring and CSV logging
+- [x] Smoothed real-time qddot estimate (3-sample sliding window FD in metrics node)

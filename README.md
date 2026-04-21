@@ -45,16 +45,17 @@ pip3 install numpy scipy matplotlib pyyaml
 
 ```bash
 cd ECE383-Final-Project
-python3 scripts/run_optimization.py
+python3 scripts/run_optimization.py --mode amplitude   # large slow sweep (default)
+python3 scripts/run_optimization.py --mode frequency   # fast tight mixing
 ```
 
 **Output files (written to current directory):**
-- `comparison_plots.png` — 4-panel figure (torques, velocities, EE acceleration, EE path)
+- `comparison_plots_<mode>.png` — 4-panel figure (torques, velocities, EE acceleration, EE path)
 - `baseline_trajectory.csv` — naive baseline trajectory + torques
-- `optimized_trajectory.csv` — optimized trajectory + torques
-- `optimized_coeffs.npy` — optimal Fourier coefficients (used by the trajectory publisher node)
+- `optimized_trajectory_<mode>.csv` — optimized trajectory + torques
+- `<mode>_coeffs.npy` — optimal Fourier coefficients (used by the trajectory publisher node)
 
-**Expected results (verified):**
+**Expected results (amplitude mode, verified):**
 - RMS torque: −34.5% (from 5.70 → 3.73 Nm)
 - Mean EE acceleration: +60.3% (from 2.76 → 4.43 m/s²)
 - Peak EE acceleration: +121.7% (from 4.18 → 9.26 m/s²)
@@ -63,9 +64,8 @@ python3 scripts/run_optimization.py
 ### Options
 
 ```bash
-python3 scripts/run_optimization.py --no-optimize      # evaluate baseline only (fast)
-python3 scripts/run_optimization.py --load-coeffs optimized_coeffs.npy  # skip re-optimization
-python3 scripts/run_optimization.py --output-dir ./results/
+python3 scripts/run_optimization.py --mode amplitude --no-optimize   # baseline only (fast)
+python3 scripts/run_optimization.py --mode amplitude --output-dir ./results/
 ```
 
 **Runtime:** ~100 seconds on a MacBook M3.
@@ -100,7 +100,7 @@ git pull
 
 ### Optimized coefficients
 
-`optimized_coeffs.npy` is force-tracked in git (added with `git add -f` despite the `.gitignore` entry), so it **will** sync automatically via `git pull`. No separate file transfer is needed.
+`amplitude_coeffs.npy` and `frequency_coeffs.npy` are force-tracked in git (added with `git add -f` despite the `.gitignore` entry), so they **will** sync automatically via `git pull`. No separate file transfer is needed.
 
 ---
 
@@ -181,14 +181,16 @@ source ~/.bashrc
 
 #### 5. Copy optimized coefficients into the install directory
 
-This step must happen **after** `colcon build` (the build creates the install directory). The trajectory publisher looks for the file at this path:
+This step must happen **after** `colcon build` (the build creates the install directory). The trajectory publisher looks for coefficients in the package share directory:
 
 ```bash
-cp ~/workspaces/ECE383-Final-Project/optimized_coeffs.npy \
-   ~/workspaces/install/bartender_arm/share/bartender_arm/optimized_coeffs.npy
+cp ~/workspaces/ECE383-Final-Project/amplitude_coeffs.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/amplitude_coeffs.npy
+cp ~/workspaces/ECE383-Final-Project/frequency_coeffs.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/frequency_coeffs.npy
 ```
 
-> If you rebuild with `colcon build`, re-run this `cp` command — colcon refreshes the install directory and overwrites it.
+> If you rebuild with `colcon build`, re-run these `cp` commands — colcon refreshes the install directory and overwrites it.
 
 #### After every `git pull`
 
@@ -198,8 +200,10 @@ If you pull new code, rebuild and re-copy the coefficients:
 cd ~/workspaces
 colcon build --packages-select bartender_arm
 source install/setup.bash
-cp ~/workspaces/ECE383-Final-Project/optimized_coeffs.npy \
-   ~/workspaces/install/bartender_arm/share/bartender_arm/optimized_coeffs.npy
+cp ~/workspaces/ECE383-Final-Project/amplitude_coeffs.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/amplitude_coeffs.npy
+cp ~/workspaces/ECE383-Final-Project/frequency_coeffs.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/frequency_coeffs.npy
 ```
 
 ---
@@ -215,10 +219,21 @@ source /opt/ros/jazzy/setup.bash
 source ~/workspaces/install/setup.bash
 ```
 
+### Trajectory modes
+
+| Mode | Frequency | Amplitude | Description |
+|------|-----------|-----------|-------------|
+| `amplitude` | 0.25 Hz | large | Slow sweeping motion — maximizes joint displacement |
+| `frequency` | 1.0 Hz | small | Fast tight mixing — maximizes oscillation rate |
+| `baseline` | 0.25 Hz | — | Zero-coefficient reference (no optimization) |
+
+Each mode has its own pre-optimized coefficients file (`amplitude_coeffs.npy` / `frequency_coeffs.npy`). If the file is missing, the publisher falls back to baseline and logs a warning.
+
 ### Option A: One-command launch (recommended)
 
 ```bash
-ros2 launch bartender_arm simulation.launch.py                       # optimized trajectory (default)
+ros2 launch bartender_arm simulation.launch.py                           # amplitude mode (default)
+ros2 launch bartender_arm simulation.launch.py trajectory_mode:=frequency
 ros2 launch bartender_arm simulation.launch.py trajectory_mode:=baseline
 ```
 
@@ -247,11 +262,15 @@ ros2 run bartender_arm metrics_subscriber_node
 
 **Pane 4 — Trajectory publisher (wait ~8s for the controller to be ready):**
 ```bash
-ros2 run bartender_arm trajectory_publisher_node \
-  --ros-args -p trajectory_mode:=optimized
-```
+# amplitude mode (default)
+ros2 run bartender_arm trajectory_publisher_node
 
-> If `optimized_coeffs.npy` is missing, the publisher falls back to the baseline trajectory and logs a warning — check the pane output if the arm isn't moving as expected.
+# or frequency / baseline
+ros2 run bartender_arm trajectory_publisher_node \
+  --ros-args -p trajectory_mode:=frequency
+ros2 run bartender_arm trajectory_publisher_node \
+  --ros-args -p trajectory_mode:=baseline
+```
 
 ### Monitor metrics in real-time
 
@@ -263,6 +282,59 @@ cat /tmp/bartender_metrics.csv                # full log (inside container)
 ```
 
 > Real-time `qddot` is estimated via finite difference over a 3-sample sliding window, spanning two time steps to reduce single-sample derivative noise. The offline optimization uses analytic derivatives and is unaffected.
+
+---
+
+## Part 5 — Running on the Real Robot Arm
+
+> All commands below run **inside the Docker container** with the physical Kinova Gen3 Lite connected via USB/Ethernet.
+
+Source the workspace first (skip if already in `~/.bashrc`):
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/workspaces/install/setup.bash
+```
+
+### Step 1 — Start the Kinova driver (starts RViz automatically)
+
+```bash
+ros2 launch kortex_bringup gen3_lite.launch.py
+```
+
+> **Note:** The exact launch file name may vary — if the above doesn't work, check available launch files with `ros2 launch kortex_bringup <TAB>`. The driver brings up `ros2_control`, connects to the arm over the network, and opens RViz.
+
+### Step 2 — Start the metrics subscriber (new Terminator pane)
+
+```bash
+ros2 run bartender_arm metrics_subscriber_node
+```
+
+> Unlike simulation, omit `use_sim_time` — the real robot uses wall clock time.
+
+### Step 3 — Start the trajectory publisher (new Terminator pane)
+
+```bash
+# amplitude mode — large slow sweep (default)
+ros2 run bartender_arm trajectory_publisher_node
+
+# or frequency mode — fast tight mixing
+ros2 run bartender_arm trajectory_publisher_node \
+  --ros-args -p trajectory_mode:=frequency
+```
+
+The arm will begin executing the trajectory immediately. The publisher loops automatically (re-sends the trajectory every cycle duration).
+
+### Monitor
+
+```bash
+ros2 topic echo /bartender/joint_torques
+ros2 topic echo /bartender/ee_acceleration
+ros2 topic echo /bartender/metrics_summary    # [peak_torque, rms_torque, mean_ee_accel]
+cat /tmp/bartender_metrics.csv
+```
+
+> **Safety:** The trajectory publisher sends waypoints to `joint_trajectory_controller`. The arm will move — make sure the workspace is clear before starting Step 3.
 
 ---
 

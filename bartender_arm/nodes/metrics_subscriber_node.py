@@ -64,8 +64,9 @@ class MetricsSubscriberNode(Node):
         with open(cfg_path) as f:
             self.params = yaml.safe_load(f)
 
-        self.prev_qdot = None
-        self.prev_time = None
+        # Sliding window of (time, qdot) pairs for smoothed FD acceleration estimate.
+        # Using the oldest and newest points spans 2 steps, halving derivative noise.
+        self.qdot_history = deque(maxlen=3)
         self.tau_window   = deque(maxlen=window_size)
         self.accel_window = deque(maxlen=window_size)
 
@@ -105,14 +106,16 @@ class MetricsSubscriberNode(Node):
         qdot = np.array([msg.velocity[i] for i in indices], dtype=float)
         ros_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
-        # Estimate qddot via finite difference
-        if self.prev_qdot is not None and self.prev_time is not None:
-            dt = ros_time - self.prev_time
-            qddot = (qdot - self.prev_qdot) / dt if dt > 1e-9 else np.zeros(6)
+        # Estimate qddot via FD over a 3-sample window (endpoints span 2 steps,
+        # which smooths single-sample noise without adding latency).
+        self.qdot_history.append((ros_time, qdot.copy()))
+        if len(self.qdot_history) >= 2:
+            t0, qdot0 = self.qdot_history[0]
+            t1, qdot1 = self.qdot_history[-1]
+            dt = t1 - t0
+            qddot = (qdot1 - qdot0) / dt if dt > 1e-9 else np.zeros(6)
         else:
             qddot = np.zeros(6)
-        self.prev_qdot = qdot.copy()
-        self.prev_time = ros_time
 
         try:
             tau  = compute_torques(q, qdot, qddot, self.params)

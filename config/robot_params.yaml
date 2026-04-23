@@ -136,10 +136,11 @@ robot:
     - bracelet_link
 
 trajectory:
-  # Home/center pose for mixing (joint angles in radians)
-  # A pose that places the end-effector roughly forward and out at
-  # a comfortable "mixing height" (~0.3m above base, 0.3m out)
-  mixing_center_joints: [0.0, 0.3491, -0.5236, 0.0, 0.8727, 0.0]
+  # Center pose for mixing (joint angles in radians).
+  # Retracted "human arm" posture: shoulder at ~30°, elbow bent ~90°, wrist pitched ~90°.
+  # This keeps the arm compact, away from joint limits, and gives the optimizer
+  # room to move in all directions — avoids the extended-upward local minimum.
+  mixing_center_joints: [0.0, 0.5236, -1.5708, 0.0, 1.5708, 0.0]
 
   n_waypoints: 120     # waypoints for ROS JointTrajectory message
 
@@ -151,7 +152,9 @@ trajectory_modes:
     frequency: 0.25             # Hz
     duration: 8.0               # seconds (integer multiple of 1/frequency)
     n_harmonics: 3
-    max_coeff_amplitude: 0.10   # rad — 53.31*0.25*0.10 = 1.333 rad/s < 1.396 rad/s ✓
+    # Raised from 0.10 to 0.20: velocity is now checked explicitly in make_constraints,
+    # so the conservative sqrt(2) implicit bound is no longer the binding constraint.
+    max_coeff_amplitude: 0.20   # rad — optimizer free to explore; velocity enforced directly
     coeffs_file: amplitude_coeffs.npy
 
   frequency:
@@ -159,26 +162,45 @@ trajectory_modes:
     frequency: 1.0              # Hz
     duration: 6.0               # seconds
     n_harmonics: 3
-    max_coeff_amplitude: 0.026  # rad — 53.31*1.0*0.026 = 1.386 rad/s < 1.396 rad/s ✓
+    # Raised from 0.026 to 0.060: velocity enforced explicitly by make_constraints.
+    max_coeff_amplitude: 0.060  # rad
     coeffs_file: frequency_coeffs.npy
 
 optimization:
   method: SLSQP
   max_iter: 300
   ftol: 1.0e-6
-  n_opt_points: 30     # time samples used during optimization (fewer = faster)
+  n_opt_points: 60     # time samples used during optimization (fewer = faster)
   n_eval_points: 300   # time samples for final evaluation and plotting
 
   # Multi-objective weights
   # J = weight_torque * J_torque - weight_accel * J_accel
   # (negative accel weight because we minimize J but want to maximize acceleration)
   weight_torque: 1.0
-  weight_accel: 0.5
+  weight_accel: 50.0
 
   # Minimum total amplitude squared (prevents degenerate zero-motion solution).
-  # With max_coeff=0.026 and one nonzero pair (a,b)=(C,C): 2*0.026^2 = 0.00135 > 0.001
   min_amplitude_sq: 0.001
+
+  # Number of random restarts for multi-start optimization.
+  # Each restart uses a different random x0; the best result is kept.
+  n_restarts: 16
+
+  # Safety margin on velocity and torque limits enforced inside the optimizer.
+  # Uses margin * limit so SLSQP linesearch has room to maneuver near boundaries.
+  constraint_safety_margin: 0.95
 
   # max_coeff_amplitude is set per trajectory_mode (see above).
   # Default here is unused when --mode is specified; kept for backward compatibility.
-  max_coeff_amplitude: 0.10
+  max_coeff_amplitude: 0.20
+
+  # Directional shaking objective (fixes centripetal loophole).
+  # shake_axis: unit vector in world frame defining the desired shake direction.
+  # Only acceleration projected onto this axis is rewarded — circular/swirling
+  # motions generate no centripetal reward along a single axis.
+  # EE at center pose points along world -Y (tool axis). Shake along Y = along-bottle-axis motion.
+  shake_axis: [0.0, 1.0, 0.0]   # world Y (horizontal, along EE tool axis)
+
+  # Spatial deviation penalty: penalizes EE drift perpendicular to shake_axis.
+  # 0.1 acts as a rubber band — prevents centripetal loops without overpowering accel reward.
+  weight_drift: 1.0

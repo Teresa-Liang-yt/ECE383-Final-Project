@@ -201,10 +201,15 @@ def rne(q, qdot, qddot, params: dict,
         # p_i expressed in frame i (rotate the parent-frame vector into child)
         p_i_in_child = RiT @ p[i]
 
-        # Linear acceleration of joint i origin (expressed in frame i)
+        # Linear acceleration of joint i origin (expressed in frame i).
+        # The joint i origin is FIXED in frame i-1, so its acceleration uses
+        # frame i-1 angular quantities rotated into frame i — NOT alpha_i/omega_i,
+        # which include joint i's own motion and are only valid for points fixed in frame i.
+        omega_prev_in_i = RiT @ omega_prev
+        alpha_prev_in_i = RiT @ alpha_prev
         a_i = (RiT @ a_prev
-               + np.cross(alpha_i, p_i_in_child)
-               + np.cross(omega_i, np.cross(omega_i, p_i_in_child)))
+               + np.cross(alpha_prev_in_i, p_i_in_child)
+               + np.cross(omega_prev_in_i, np.cross(omega_prev_in_i, p_i_in_child)))
         a_joint[i] = a_i
 
         # Linear acceleration of CoM of link i

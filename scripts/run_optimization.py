@@ -39,10 +39,10 @@ from bartender_arm.dynamics import (
 )
 from bartender_arm.trajectory import (
     make_trajectory, baseline_params, trajectory_metrics,
-    print_metrics_table, sample_trajectory
+    print_metrics_table
 )
 from bartender_arm.optimizer import (
-    run_optimization, check_constraints, objective_and_components
+    multi_start_optimization, global_optimization, check_constraints
 )
 
 
@@ -69,7 +69,7 @@ def run_verification(params: dict, verbose: bool = True):
     q_home = np.zeros(6)
 
     # 1. FK at home pose
-    T_links, T_ee = forward_kinematics(q_home, params)
+    _, T_ee = forward_kinematics(q_home, params)
     p_ee = T_ee[:3, 3]
     if verbose:
         print(f"FK home pose — EE position: [{p_ee[0]:.4f}, {p_ee[1]:.4f}, {p_ee[2]:.4f}] m")
@@ -226,14 +226,27 @@ def plot_comparison(baseline_data: dict, optimized_data: dict,
     ax3.legend(fontsize=8)
 
     # -----------------------------------------------------------------------
-    # Panel 4: End-effector XY path
+    # Panel 4: End-effector path projected onto shake axis vs perpendicular
     # -----------------------------------------------------------------------
     ax4 = fig.add_subplot(gs[1, 1])
     pos_b = baseline_data['ee_pos']
     pos_o = optimized_data['ee_pos']
 
-    # Color the path by time
-    t_norm = np.linspace(0, 1, len(t_o))
+    # Project onto shake axis and one perpendicular for visual clarity.
+    # Good directional trajectories appear as elongated ovals; circular ones as circles.
+    shake_axis = np.array(params['optimization'].get('shake_axis', [1.0, 0.0, 0.0]), dtype=float)
+    shake_axis = shake_axis / np.linalg.norm(shake_axis)
+    # Pick perpendicular: world axis most orthogonal to shake_axis
+    candidates = [np.array([1., 0., 0.]), np.array([0., 0., 1.]), np.array([0., 1., 0.])]
+    perp_axis = min(candidates, key=lambda v: abs(np.dot(v, shake_axis)))
+    perp_axis = perp_axis - np.dot(perp_axis, shake_axis) * shake_axis
+    perp_axis = perp_axis / np.linalg.norm(perp_axis)
+
+    proj_b = pos_b @ shake_axis
+    perp_b = pos_b @ perp_axis
+    proj_o = pos_o @ shake_axis
+    perp_o = pos_o @ perp_axis
+
     from matplotlib.collections import LineCollection
 
     def colored_line(ax, x, y, c, cmap='Blues', lw=2, label=''):
@@ -242,18 +255,19 @@ def plot_comparison(baseline_data: dict, optimized_data: dict,
         lc   = LineCollection(segs, cmap=cmap, linewidth=lw)
         lc.set_array(c)
         ax.add_collection(lc)
-        # Dummy plot for legend
         ax.plot([], [], color=plt.cm.get_cmap(cmap)(0.7), label=label, lw=lw)
 
-    colored_line(ax4, pos_b[:, 0], pos_b[:, 1],
+    colored_line(ax4, proj_b, perp_b,
                  np.linspace(0, 1, len(t_b)), cmap='Blues', label='Baseline')
-    colored_line(ax4, pos_o[:, 0], pos_o[:, 1],
+    colored_line(ax4, proj_o, perp_o,
                  np.linspace(0, 1, len(t_o)), cmap='Oranges', label='Optimized')
 
     ax4.autoscale()
-    ax4.set_xlabel('X (m)')
-    ax4.set_ylabel('Y (m)')
-    ax4.set_title('EE Trajectory Path (XY plane, colored by time)')
+    shake_label = f"[{shake_axis[0]:.0f},{shake_axis[1]:.0f},{shake_axis[2]:.0f}]"
+    perp_label  = f"[{perp_axis[0]:.0f},{perp_axis[1]:.0f},{perp_axis[2]:.0f}]"
+    ax4.set_xlabel(f'Along shake axis {shake_label} (m)')
+    ax4.set_ylabel(f'Perpendicular {perp_label} (m)')
+    ax4.set_title('EE Path: shake axis (horiz) vs perpendicular (vert)')
     ax4.legend()
     ax4.grid(True, alpha=0.3)
     ax4.set_aspect('equal', adjustable='datalim')
@@ -283,7 +297,6 @@ def plot_comparison(baseline_data: dict, optimized_data: dict,
 
 def save_trajectory_csv(traj: dict, torques: np.ndarray, path: str):
     """Save trajectory + torques to CSV."""
-    N = len(traj['t'])
     header = 't,' + ','.join(f'q{i+1}' for i in range(6)) + ',' \
            + ','.join(f'qdot{i+1}' for i in range(6)) + ',' \
            + ','.join(f'qddot{i+1}' for i in range(6)) + ',' \
@@ -325,6 +338,13 @@ def main():
     parser.add_argument(
         '--load-coeffs', default=None,
         help='Load previously saved coefficients .npy instead of re-optimizing')
+    parser.add_argument(
+        '--restarts', type=int, default=None,
+        help='Number of random restarts for multi-start optimization '
+             '(default: read from optimization.n_restarts in config, fallback 8)')
+    parser.add_argument(
+        '--global', dest='use_global', action='store_true',
+        help='Use Differential Evolution + SLSQP instead of multi-start SLSQP')
     args = parser.parse_args()
 
     # Resolve config path
@@ -384,20 +404,31 @@ def main():
     # -----------------------------------------------------------------------
     # Optimization
     # -----------------------------------------------------------------------
+    n_restarts = args.restarts if args.restarts is not None else \
+        int(params['optimization'].get('n_restarts', 8))
+
     if args.load_coeffs:
         print(f"Loading optimized coefficients from {args.load_coeffs}")
         x_opt = np.load(args.load_coeffs)
     elif not args.no_optimize:
-        print("=" * 60)
-        print("RUNNING SLSQP OPTIMIZATION")
-        print("=" * 60)
         t0 = time.time()
-        result = run_optimization(
-            q0=q0, f=f, t_arr_opt=t_opt, params=params,
-            x0=x_baseline, n_harmonics=n_harm, verbose=True,
-            max_coeff=max_coeff)
+        if args.use_global:
+            print("=" * 60)
+            print("RUNNING GLOBAL OPTIMIZATION (DE + SLSQP)")
+            print("=" * 60)
+            result = global_optimization(
+                q0=q0, f=f, t_arr_opt=t_opt, params=params,
+                n_harmonics=n_harm, verbose=True, max_coeff=max_coeff)
+        else:
+            print("=" * 60)
+            print(f"RUNNING MULTI-START SLSQP OPTIMIZATION ({n_restarts} starts)")
+            print("=" * 60)
+            result = multi_start_optimization(
+                q0=q0, f=f, t_arr_opt=t_opt, params=params,
+                n_restarts=n_restarts, n_harmonics=n_harm, verbose=True,
+                max_coeff=max_coeff)
         elapsed = time.time() - t0
-        print(f"\nOptimization wall time: {elapsed:.1f}s")
+        print(f"\nTotal optimization wall time: {elapsed:.1f}s")
         x_opt = result.x
     else:
         print("Skipping optimization (--no-optimize)")

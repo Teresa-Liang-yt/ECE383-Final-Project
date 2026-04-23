@@ -29,9 +29,9 @@ Design choices
 """
 
 import numpy as np
-from scipy.optimize import minimize, OptimizeResult
+from scipy.optimize import minimize, differential_evolution, NonlinearConstraint, OptimizeResult
 
-from bartender_arm.kinematics import ee_acceleration
+from bartender_arm.kinematics import ee_acceleration, ee_position
 from bartender_arm.dynamics import compute_torques
 from bartender_arm.trajectory import make_trajectory, baseline_params
 
@@ -44,67 +44,31 @@ def objective(x, t_arr, q0, f, params, weights, n_harmonics: int = 3) -> float:
     """
     Compute optimization objective J(x).
 
-    J(x) = (1/N) Σ_t [ w₁·||τ(t)||² - w₂·||a_ee_lin(t)||² ]
+    J(x) = (1/N) Σ_t [ w_τ·||τ||² - w_a·(a_ee·n̂)² + w_d·||p_ee_perp - p_target_perp||² ]
 
-    Parameters
-    ----------
-    x          : (36,) optimization variable vector
-    t_arr      : (N,) time array for evaluation
-    q0         : (6,) center joint pose
-    f          : float, base trajectory frequency (Hz)
-    params     : dict loaded from robot_params.yaml
-    weights    : dict with keys 'weight_torque', 'weight_accel'
-    n_harmonics: int
+    Rewards acceleration projected onto the shake axis n̂ (directional, not centripetal),
+    and penalizes EE drift perpendicular to that axis.
 
-    Returns
-    -------
-    J : float (scalar to minimize)
+    weights keys: 'weight_torque', 'weight_accel', 'weight_drift'
+    params keys:  optimization.shake_axis  (unit vector, default [1,0,0])
     """
-    w_tau  = float(weights.get('weight_torque', 1.0))
-    w_acc  = float(weights.get('weight_accel',  0.5))
+    w_tau   = float(weights.get('weight_torque', 1.0))
+    w_acc   = float(weights.get('weight_accel',  0.5))
+    w_drift = float(weights.get('weight_drift',  0.0))
+
+    opt_cfg    = params['optimization']
+    shake_axis = np.array(opt_cfg.get('shake_axis', [1.0, 0.0, 0.0]), dtype=float)
+    shake_axis = shake_axis / np.linalg.norm(shake_axis)
+
+    q0 = np.asarray(q0, dtype=float)
+    p_target = ee_position(q0, params)
 
     traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
     N    = len(t_arr)
 
     J_torque = 0.0
     J_accel  = 0.0
-
-    for t_idx in range(N):
-        q_t     = traj['q'][t_idx]
-        qdot_t  = traj['qdot'][t_idx]
-        qddot_t = traj['qddot'][t_idx]
-
-        tau    = compute_torques(q_t, qdot_t, qddot_t, params)
-        a_ee   = ee_acceleration(q_t, qdot_t, qddot_t, params)
-
-        J_torque += np.dot(tau, tau)          # ||τ||²
-        J_accel  += np.dot(a_ee[:3], a_ee[:3])  # ||a_ee_linear||²
-
-    J_torque /= N
-    J_accel  /= N
-
-    return w_tau * J_torque - w_acc * J_accel
-
-
-def objective_and_components(x, t_arr, q0, f, params, weights,
-                              n_harmonics: int = 3) -> tuple:
-    """
-    Like objective() but also returns the two component values.
-
-    Returns
-    -------
-    J         : float — total objective
-    J_torque  : float — mean squared torque norm
-    J_accel   : float — mean squared EE linear acceleration
-    """
-    w_tau = float(weights.get('weight_torque', 1.0))
-    w_acc = float(weights.get('weight_accel',  0.5))
-
-    traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
-    N    = len(t_arr)
-
-    J_torque = 0.0
-    J_accel  = 0.0
+    J_drift  = 0.0
 
     for t_idx in range(N):
         q_t     = traj['q'][t_idx]
@@ -115,12 +79,77 @@ def objective_and_components(x, t_arr, q0, f, params, weights,
         a_ee = ee_acceleration(q_t, qdot_t, qddot_t, params)
 
         J_torque += np.dot(tau, tau)
-        J_accel  += np.dot(a_ee[:3], a_ee[:3])
+        # Directional: only reward acceleration along shake axis (blocks centripetal loophole)
+        proj = np.dot(a_ee[:3], shake_axis)
+        J_accel += proj * proj
+
+        if w_drift > 0.0:
+            p_ee  = ee_position(q_t, params)
+            diff  = p_ee - p_target
+            # Penalize drift perpendicular to shake axis
+            drift = diff - np.dot(diff, shake_axis) * shake_axis
+            J_drift += np.dot(drift, drift)
 
     J_torque /= N
     J_accel  /= N
+    J_drift  /= N
 
-    return w_tau * J_torque - w_acc * J_accel, J_torque, J_accel
+    return w_tau * J_torque - w_acc * J_accel + w_drift * J_drift
+
+
+def objective_and_components(x, t_arr, q0, f, params, weights,
+                              n_harmonics: int = 3) -> tuple:
+    """
+    Like objective() but also returns the three component values.
+
+    Returns
+    -------
+    J         : float — total objective
+    J_torque  : float — mean squared torque norm
+    J_accel   : float — mean squared directional EE acceleration
+    J_drift   : float — mean squared EE drift perpendicular to shake axis
+    """
+    w_tau   = float(weights.get('weight_torque', 1.0))
+    w_acc   = float(weights.get('weight_accel',  0.5))
+    w_drift = float(weights.get('weight_drift',  0.0))
+
+    opt_cfg    = params['optimization']
+    shake_axis = np.array(opt_cfg.get('shake_axis', [1.0, 0.0, 0.0]), dtype=float)
+    shake_axis = shake_axis / np.linalg.norm(shake_axis)
+
+    q0 = np.asarray(q0, dtype=float)
+    p_target = ee_position(q0, params)
+
+    traj = make_trajectory(x, f, t_arr, q0, n_harmonics=n_harmonics)
+    N    = len(t_arr)
+
+    J_torque = 0.0
+    J_accel  = 0.0
+    J_drift  = 0.0
+
+    for t_idx in range(N):
+        q_t     = traj['q'][t_idx]
+        qdot_t  = traj['qdot'][t_idx]
+        qddot_t = traj['qddot'][t_idx]
+
+        tau  = compute_torques(q_t, qdot_t, qddot_t, params)
+        a_ee = ee_acceleration(q_t, qdot_t, qddot_t, params)
+
+        J_torque += np.dot(tau, tau)
+        proj = np.dot(a_ee[:3], shake_axis)
+        J_accel += proj * proj
+
+        if w_drift > 0.0:
+            p_ee  = ee_position(q_t, params)
+            diff  = p_ee - p_target
+            drift = diff - np.dot(diff, shake_axis) * shake_axis
+            J_drift += np.dot(drift, drift)
+
+    J_torque /= N
+    J_accel  /= N
+    J_drift  /= N
+
+    return w_tau * J_torque - w_acc * J_accel + w_drift * J_drift, J_torque, J_accel, J_drift
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +180,13 @@ def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
     jnames  = robot['joint_names']
     q_min   = np.array([jlimits[j][0] for j in jnames], dtype=float)
     q_max   = np.array([jlimits[j][1] for j in jnames], dtype=float)
+    v_max   = np.array(robot['velocity_limits'], dtype=float)
     tau_max = np.array(robot['effort_limits'],   dtype=float)
     A_min   = float(opt_cfg.get('min_amplitude_sq', 0.01))
+
+    safety  = float(opt_cfg.get('constraint_safety_margin', 1.0))
+    v_max   = v_max   * safety
+    tau_max = tau_max * safety
 
     N = len(t_arr)
 
@@ -171,21 +205,23 @@ def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
         lower = (q - q_min).ravel()  # q[t,j] - q_min[j] >= 0
         return np.concatenate([upper, lower])
 
+    def vel_constraints(x):
+        # Explicit velocity constraint: v_max[j] - |qdot[t,j]| >= 0
+        # This replaces the previous implicit guarantee via conservative coefficient bounds,
+        # allowing max_coeff_amplitude to be set higher so the optimizer explores more.
+        _, qdot, _ = _eval(x)
+        return (v_max - np.abs(qdot)).ravel()
+
     def torque_constraints(x):
         _, _, torques = _eval(x)
         return (tau_max - np.abs(torques)).ravel()  # tau_max[j] - |tau[t,j]| >= 0
-
-    # NOTE: No explicit velocity constraint needed here.
-    # max_coeff_amplitude is set so that (1+2+3)*2*pi*f*C < v_max for all joints,
-    # guaranteeing velocity limits hold for ALL time — not just sample points.
-    # See config/robot_params.yaml: max_coeff_amplitude=0.10, f=0.25 Hz, v_max=1.3963 rad/s
-    # → max_qdot = 6*2*pi*0.25*sqrt(2)*0.10 = 1.333 rad/s < 1.3963 rad/s  ✓
 
     def min_amplitude(x):
         return np.dot(x, x) - A_min
 
     return [
         {'type': 'ineq', 'fun': pos_constraints},
+        {'type': 'ineq', 'fun': vel_constraints},
         {'type': 'ineq', 'fun': torque_constraints},
         {'type': 'ineq', 'fun': min_amplitude},
     ]
@@ -245,6 +281,7 @@ def run_optimization(q0, f: float, t_arr_opt, params,
     weights  = {
         'weight_torque': float(opt_cfg.get('weight_torque', 1.0)),
         'weight_accel':  float(opt_cfg.get('weight_accel',  0.5)),
+        'weight_drift':  float(opt_cfg.get('weight_drift',  0.0)),
     }
     max_iter = int(opt_cfg.get('max_iter', 300))
     ftol     = float(opt_cfg.get('ftol', 1e-6))
@@ -266,15 +303,15 @@ def run_optimization(q0, f: float, t_arr_opt, params,
 
     if verbose:
         N_t = len(t_arr)
-        n_scalar = 2 * N_t * 6 + N_t * 6 + 1  # pos(2NJ) + torque(NJ) + min_amp
+        n_scalar = 2 * N_t * 6 + N_t * 6 + N_t * 6 + 1  # pos(2NJ) + vel(NJ) + torque(NJ) + min_amp
         print(f"Starting SLSQP optimization:")
         print(f"  Variables  : {len(x0)}")
-        print(f"  Constraints: ~{n_scalar} scalar (3 batched vector fns; velocity guaranteed by bounds)")
+        print(f"  Constraints: ~{n_scalar} scalar (4 batched vector fns)")
         print(f"  Time points: {len(t_arr)} (opt), {params['optimization']['n_eval_points']} (eval)")
         print(f"  Max iter   : {max_iter}")
-        J0, J_tau0, J_acc0 = objective_and_components(
+        J0, J_tau0, J_acc0, J_drift0 = objective_and_components(
             x0, t_arr, q0, f, params, weights, n_harmonics)
-        print(f"  Initial J  : {J0:.6f}  (J_torque={J_tau0:.4f}, J_accel={J_acc0:.4f})")
+        print(f"  Initial J  : {J0:.6f}  (J_torque={J_tau0:.4f}, J_accel={J_acc0:.4f}, J_drift={J_drift0:.4f})")
 
     def obj_fn(x):
         return objective(x, t_arr, q0, f, params, weights, n_harmonics)
@@ -293,12 +330,181 @@ def run_optimization(q0, f: float, t_arr_opt, params,
     )
 
     if verbose:
-        J_opt, J_tau_opt, J_acc_opt = objective_and_components(
+        J_opt, J_tau_opt, J_acc_opt, J_drift_opt = objective_and_components(
             result.x, t_arr, q0, f, params, weights, n_harmonics)
         print(f"\nOptimization {'converged' if result.success else 'did NOT converge'}:")
-        print(f"  Final J    : {J_opt:.6f}  (J_torque={J_tau_opt:.4f}, J_accel={J_acc_opt:.4f})")
+        print(f"  Final J    : {J_opt:.6f}  (J_torque={J_tau_opt:.4f}, J_accel={J_acc_opt:.4f}, J_drift={J_drift_opt:.4f})")
         print(f"  Message    : {result.message}")
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Multi-start optimization (escape local minima)
+# ---------------------------------------------------------------------------
+
+def multi_start_optimization(q0, f: float, t_arr_opt, params,
+                              n_restarts: int = 8, n_harmonics: int = 3,
+                              verbose: bool = True,
+                              max_coeff: float = None,
+                              rng_seed: int = 42) -> OptimizeResult:
+    """
+    Run SLSQP from n_restarts different starting points and return the best.
+
+    Starting points:
+        - Start 0: baseline_params (deterministic, gives reproducibility)
+        - Starts 1..n_restarts-1: random coefficients uniformly in [-max_coeff, max_coeff]
+
+    The best result is selected by lowest objective value among converged runs,
+    falling back to the best non-converged run if none converged.
+
+    Parameters
+    ----------
+    q0, f, t_arr_opt, params, n_harmonics, verbose, max_coeff
+        Same as run_optimization().
+    n_restarts : int
+        Total number of starting points (including the baseline start).
+    rng_seed : int
+        Seed for reproducible random starts.
+
+    Returns
+    -------
+    best_result : scipy.optimize.OptimizeResult
+        Best result across all starts.  Also has attribute `start_index`
+        indicating which start produced it.
+    """
+    if max_coeff is None:
+        max_coeff = float(params['optimization'].get('max_coeff_amplitude', 0.20))
+
+    rng   = np.random.default_rng(rng_seed)
+    n_var = 2 * 6 * n_harmonics  # 36 for default settings
+
+    best_result = None
+    best_J      = np.inf
+
+    for i in range(n_restarts):
+        if i == 0:
+            x0 = baseline_params(n_joints=6, n_harmonics=n_harmonics)
+            label = "baseline"
+        else:
+            x0    = rng.uniform(-max_coeff, max_coeff, size=n_var)
+            label = f"random-{i}"
+
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"Multi-start {i+1}/{n_restarts}  (init: {label})")
+            print(f"{'='*60}")
+
+        result = run_optimization(
+            q0=q0, f=f, t_arr_opt=t_arr_opt, params=params,
+            x0=x0, n_harmonics=n_harmonics, verbose=verbose,
+            max_coeff=max_coeff)
+        result.start_index = i
+        result.start_label = label
+
+        if result.fun < best_J:
+            best_J      = result.fun
+            best_result = result
+
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Multi-start complete — best start: {best_result.start_label} "
+              f"(J={best_J:.6f})")
+        print(f"{'='*60}\n")
+
+    return best_result
+
+
+# ---------------------------------------------------------------------------
+# Global optimization (Differential Evolution + SLSQP refinement)
+# ---------------------------------------------------------------------------
+
+def global_optimization(q0, f: float, t_arr_opt, params,
+                        n_harmonics: int = 3,
+                        verbose: bool = True,
+                        max_coeff: float = None,
+                        de_popsize: int = 5,
+                        de_maxiter: int = 200,
+                        rng_seed: int = 42) -> OptimizeResult:
+    """
+    Two-phase global optimizer: Differential Evolution then SLSQP refinement.
+
+    Phase 1 — Differential Evolution explores the full search space without
+    getting trapped in local minima.  Uses the same constraints as SLSQP.
+
+    Phase 2 — SLSQP refines the DE solution to tight convergence.
+
+    Parameters
+    ----------
+    q0, f, t_arr_opt, params, n_harmonics, verbose, max_coeff
+        Same as run_optimization().
+    de_popsize : int
+        DE population multiplier (total population = de_popsize * n_vars).
+        Higher = more thorough but slower.  Default 10.
+    de_maxiter : int
+        Maximum DE generations.  Default 500.
+    rng_seed : int
+        Seed for reproducibility.
+
+    Returns
+    -------
+    result : scipy.optimize.OptimizeResult from the SLSQP refinement step.
+    """
+    if max_coeff is None:
+        max_coeff = float(params['optimization'].get('max_coeff_amplitude', 0.20))
+
+    opt_cfg = params['optimization']
+    weights = {
+        'weight_torque': float(opt_cfg.get('weight_torque', 1.0)),
+        'weight_accel':  float(opt_cfg.get('weight_accel',  0.5)),
+        'weight_drift':  float(opt_cfg.get('weight_drift',  0.0)),
+    }
+
+    q0    = np.asarray(q0, dtype=float)
+    t_arr = np.asarray(t_arr_opt, dtype=float)
+    bounds      = make_bounds(params, n_harmonics, max_coeff=max_coeff)
+    constraints = make_constraints(t_arr, q0, f, params, n_harmonics)
+    n_var       = 2 * 6 * n_harmonics
+
+    def obj_fn(x):
+        return objective(x, t_arr, q0, f, params, weights, n_harmonics)
+
+    if verbose:
+        print(f"Phase 1 — Differential Evolution")
+        print(f"  Population : {de_popsize * n_var}  ({de_popsize} × {n_var} vars)")
+        print(f"  Max generations: {de_maxiter}")
+
+    # differential_evolution requires NonlinearConstraint objects, not SLSQP dicts
+    de_constraints = [
+        NonlinearConstraint(c['fun'], 0.0, np.inf) for c in constraints
+    ]
+
+    de_result = differential_evolution(
+        func=obj_fn,
+        bounds=bounds,
+        constraints=de_constraints,
+        maxiter=de_maxiter,
+        popsize=de_popsize,
+        seed=rng_seed,
+        tol=1e-6,
+        mutation=(0.5, 1.0),
+        recombination=0.7,
+        polish=False,
+        disp=verbose,
+    )
+
+    if verbose:
+        J_de, J_tau_de, J_acc_de, J_drift_de = objective_and_components(
+            de_result.x, t_arr, q0, f, params, weights, n_harmonics)
+        print(f"  DE result  : J={J_de:.6f}  (J_torque={J_tau_de:.4f}, J_accel={J_acc_de:.4f}, J_drift={J_drift_de:.4f})")
+        print(f"\nPhase 2 — SLSQP refinement from DE solution")
+
+    result = run_optimization(
+        q0=q0, f=f, t_arr_opt=t_arr, params=params,
+        x0=de_result.x, n_harmonics=n_harmonics,
+        verbose=verbose, max_coeff=max_coeff)
+
+    result.de_result = de_result
     return result
 
 

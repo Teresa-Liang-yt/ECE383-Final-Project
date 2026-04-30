@@ -253,6 +253,41 @@ source ~/workspaces/install/setup.bash
 
 Each mode has its own pre-optimized coefficients file (`amplitude_coeffs.npy` / `frequency_coeffs.npy`). If the file is missing, the publisher falls back to baseline and logs a warning.
 
+### Global optimum vs local minimum results
+
+Two sets of results are committed for report comparison:
+
+| Version | Config | Arm posture | Coeff files | Box bound |
+|---------|--------|-------------|-------------|-----------|
+| **Global** (DE + SLSQP) | `robot_params.yaml` | Retracted — `[0, 0.52, -1.57, 0, 1.57, 0]` | `amplitude_coeffs.npy` / `frequency_coeffs.npy` | 0.25 / 0.06 rad |
+| **Local** (multi-start SLSQP) | `robot_params_local.yaml` | Extended upward — `[0, 0.35, -0.52, 0, 0.87, 0]` | `amplitude_coeffs_local.npy` / `frequency_coeffs_local.npy` | 0.10 / 0.026 rad |
+
+To run the **local minimum** version on the VM, pass both the alternate config and coefficients to the publisher:
+
+```bash
+# Copy local coefficients to install directory first
+cp ~/workspaces/ECE383-Final-Project/amplitude_coeffs_local.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/amplitude_coeffs_local.npy
+cp ~/workspaces/ECE383-Final-Project/frequency_coeffs_local.npy \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/frequency_coeffs_local.npy
+cp ~/workspaces/ECE383-Final-Project/config/robot_params_local.yaml \
+   ~/workspaces/install/bartender_arm/share/bartender_arm/config/robot_params_local.yaml
+
+# Run amplitude local-min (arm extended upward posture)
+ros2 run bartender_arm trajectory_publisher_node --ros-args \
+  -p trajectory_mode:=amplitude \
+  -p use_sim_time:=true \
+  -p config_path:=$(ros2 pkg prefix bartender_arm)/share/bartender_arm/config/robot_params_local.yaml \
+  -p coeffs_path:=$(ros2 pkg prefix bartender_arm)/share/bartender_arm/amplitude_coeffs_local.npy
+
+# Run frequency local-min
+ros2 run bartender_arm trajectory_publisher_node --ros-args \
+  -p trajectory_mode:=frequency \
+  -p use_sim_time:=true \
+  -p config_path:=$(ros2 pkg prefix bartender_arm)/share/bartender_arm/config/robot_params_local.yaml \
+  -p coeffs_path:=$(ros2 pkg prefix bartender_arm)/share/bartender_arm/frequency_coeffs_local.npy
+```
+
 ### Option A: One-command launch (recommended)
 
 ```bash
@@ -275,33 +310,47 @@ ros2 launch kortex_bringup kortex_sim_control.launch.py \
 
 **Pane 2 — RViz (wait ~5s for Gazebo to finish loading):**
 ```bash
+source /opt/ros/jazzy/setup.bash && source ~/workspaces/install/setup.bash
 ros2 run rviz2 rviz2 \
   -d ~/workspaces/install/bartender_arm/share/bartender_arm/rviz/bartender_arm.rviz
 ```
 
+> The `Stereo is NOT SUPPORTED` and OpenGL messages are normal — not errors.
+
 **Pane 3 — Metrics subscriber:**
 ```bash
-ros2 run bartender_arm metrics_subscriber_node
+source /opt/ros/jazzy/setup.bash && source ~/workspaces/install/setup.bash
+ros2 run bartender_arm metrics_subscriber_node \
+  --ros-args -p use_sim_time:=true
 ```
 
 **Pane 4 — Trajectory publisher (wait ~8s for the controller to be ready):**
 ```bash
-# amplitude mode (default)
-ros2 run bartender_arm trajectory_publisher_node
+source /opt/ros/jazzy/setup.bash && source ~/workspaces/install/setup.bash
 
-# or frequency / baseline
+# Amplitude mode — large slow sweep (0.25 Hz)
 ros2 run bartender_arm trajectory_publisher_node \
-  --ros-args -p trajectory_mode:=frequency
+  --ros-args -p trajectory_mode:=amplitude -p use_sim_time:=true
+
+# Frequency mode — fast tight mixing (1.0 Hz)
 ros2 run bartender_arm trajectory_publisher_node \
-  --ros-args -p trajectory_mode:=baseline
+  --ros-args -p trajectory_mode:=frequency -p use_sim_time:=true
+
+# Baseline — unoptimized single-joint sinusoid reference
+ros2 run bartender_arm trajectory_publisher_node \
+  --ros-args -p trajectory_mode:=baseline -p use_sim_time:=true
 ```
+
+> **`use_sim_time:=true` is required.** Gazebo runs on simulation time (starts at t=0). Without this flag the trajectory publisher stamps messages with wall-clock time (~Unix epoch), the controller sees waypoints scheduled billions of seconds in the future, and silently ignores them — the arm will not move.
+
+> Confirm coefficients loaded: the log should say `Mode=amplitude | f=0.25 Hz | loaded coefficients from .../amplitude_coeffs.npy`. If it says `Mode=baseline` instead, the `.npy` files were not copied to the install directory — re-run the `cp` commands from Step 3f.
 
 ### Monitor metrics in real-time
 
 ```bash
+ros2 topic echo /bartender/metrics_summary    # [peak_torque, rms_torque, mean_ee_accel]
 ros2 topic echo /bartender/joint_torques
 ros2 topic echo /bartender/ee_acceleration
-ros2 topic echo /bartender/metrics_summary    # [peak_torque, rms_torque, mean_ee_accel]
 cat /tmp/bartender_metrics.csv                # full log (inside container)
 ```
 

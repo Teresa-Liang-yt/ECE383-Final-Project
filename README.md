@@ -2,7 +2,7 @@
 
 Kinova Gen3 Lite 6-DOF arm simulation with mixing-motion trajectory optimization.
 
-**Objective:** Find joint trajectories that maximize end-effector acceleration (mixing effectiveness) while minimizing joint torques (mechanical safety), subject to joint position, velocity, and torque limits.
+**Objective:** Find joint trajectories that maximize end-effector acceleration along a target shake axis (mixing effectiveness) while minimizing joint torques (mechanical safety), subject to joint position, velocity, and torque limits.
 
 ---
 
@@ -14,7 +14,7 @@ ECE383-Final-Project/
 │   ├── kinematics.py           # Forward kinematics + geometric Jacobian
 │   ├── dynamics.py             # Recursive Newton-Euler: τ = M(q)q̈ + C(q,q̇)q̇ + G(q)
 │   ├── trajectory.py           # Fourier-series trajectory parameterization
-│   ├── optimizer.py            # SLSQP constrained optimization
+│   ├── optimizer.py            # DE + SLSQP constrained optimization
 │   └── nodes/                  # ROS2 node scripts (only run inside Docker)
 │       ├── trajectory_publisher_node.py
 │       └── metrics_subscriber_node.py
@@ -45,30 +45,54 @@ pip3 install numpy scipy matplotlib pyyaml
 
 ```bash
 cd ECE383-Final-Project
-python3 scripts/run_optimization.py --mode amplitude   # large slow sweep (default)
-python3 scripts/run_optimization.py --mode frequency   # fast tight mixing
+
+# Recommended: global optimizer (Differential Evolution + SLSQP) — avoids local minima
+python3 scripts/run_optimization.py --mode amplitude --global
+python3 scripts/run_optimization.py --mode frequency --global
+
+# Fast local-only (multi-start SLSQP, ~100s — good for quick iteration)
+python3 scripts/run_optimization.py --mode amplitude
+python3 scripts/run_optimization.py --mode frequency
 ```
 
 **Output files (written to current directory):**
-- `comparison_plots_<mode>.png` — 4-panel figure (torques, velocities, EE acceleration, EE path)
+- `comparison_plots_<mode>.png` — 4-panel figure (torques, velocities, EE acceleration, EE path projected onto shake axis)
 - `baseline_trajectory.csv` — naive baseline trajectory + torques
 - `optimized_trajectory_<mode>.csv` — optimized trajectory + torques
 - `<mode>_coeffs.npy` — optimal Fourier coefficients (used by the trajectory publisher node)
 
-**Expected results (amplitude mode, verified):**
-- RMS torque: −34.5% (from 5.70 → 3.73 Nm)
-- Mean EE acceleration: +60.3% (from 2.76 → 4.43 m/s²)
-- Peak EE acceleration: +121.7% (from 4.18 → 9.26 m/s²)
-- All constraints satisfied: position, velocity (margin 0.05 rad/s), torque (margin 5.4 Nm)
+**Additional deliverable files (pre-generated, committed to repo):**
+- `results_summary_tables.png` — A4-ratio summary of all results metrics, per-joint constraints, and trajectory characteristics
+- `results_summary_tables.xlsx` — Same tables in formatted Excel (A4 print-ready, color-coded by mode)
+
+**Expected results (verified with `--global`, corrected RNE dynamics, directional objective):**
+
+| Metric | Baseline | Optimized | Change |
+|--------|----------|-----------|--------|
+| **Amplitude mode (0.25 Hz)** | | | |
+| Peak EE accel (m/s²) | 0.19 | 4.91 | +2553% |
+| Mean EE accel (m/s²) | 0.12 | 3.42 | +2701% |
+| RMS torque (Nm) | 6.44 | 7.31 | +13.5% |
+| Peak joint vel (rad/s) | 0.28 | 1.39 | within limit |
+| Y-axis accel fraction | — | 49% | — |
+| **Frequency mode (1.0 Hz)** | | | |
+| Peak EE accel (m/s²) | 2.95 | 11.24 | +280% |
+| Mean EE accel (m/s²) | 1.96 | 7.14 | +265% |
+| RMS torque (Nm) | 7.38 | 9.26 | +25.5% |
+| Peak joint vel (rad/s) | 1.13 | 1.30 | within limit |
+| Y-axis accel fraction | — | 80% | — |
+
+All constraints satisfied. Tightest margins: position >0.82 rad, torque >1.65 Nm (frequency J1), velocity >0.001 rad/s (amplitude, velocity-bound) / >0.098 rad/s (frequency, torque-bound).
 
 ### Options
 
 ```bash
 python3 scripts/run_optimization.py --mode amplitude --no-optimize   # baseline only (fast)
 python3 scripts/run_optimization.py --mode amplitude --output-dir ./results/
+python3 scripts/run_optimization.py --mode amplitude --load-coeffs amplitude_coeffs.npy  # re-evaluate saved result
 ```
 
-**Runtime:** ~100 seconds on a MacBook M3.
+**Runtime:** ~100 seconds (multi-start SLSQP) or ~9–10 hours (global DE + SLSQP, recommended for final coefficients). Run with `caffeinate -i` on macOS to prevent sleep.
 
 ---
 
@@ -223,9 +247,9 @@ source ~/workspaces/install/setup.bash
 
 | Mode | Frequency | Amplitude | Description |
 |------|-----------|-----------|-------------|
-| `amplitude` | 0.25 Hz | large | Slow sweeping motion — maximizes joint displacement |
-| `frequency` | 1.0 Hz | small | Fast tight mixing — maximizes oscillation rate |
-| `baseline` | 0.25 Hz | — | Zero-coefficient reference (no optimization) |
+| `amplitude` | 0.25 Hz | large (up to 0.25 rad) | Slow sweeping motion — maximizes joint displacement |
+| `frequency` | 1.0 Hz | small (up to 0.06 rad) | Fast tight mixing — maximizes oscillation rate |
+| `baseline` | 0.25 Hz | — | Single-joint sinusoid reference (no optimization) |
 
 Each mode has its own pre-optimized coefficients file (`amplitude_coeffs.npy` / `frequency_coeffs.npy`). If the file is missing, the publisher falls back to baseline and logs a warning.
 
@@ -338,7 +362,6 @@ cat /tmp/bartender_metrics.csv
 
 ---
 
-
 ## Engineering Design
 
 ### Trajectory Parameterization
@@ -349,13 +372,13 @@ Fourier series over 6 joints with K=3 harmonics:
 q_i(t) = q0_i + Σ_{k=1}^{3} [ a_{i,k}·sin(k·2πf·t) + b_{i,k}·cos(k·2πf·t) ]
 ```
 
-36 optimization variables. Analytic derivatives — no finite differences during optimization.
+36 optimization variables total (2 coefficients × 6 joints × 3 harmonics). Analytic first and second derivatives — no finite differences during optimization.
 
-**Velocity bound by construction:** With coefficient bound `C = 0.026 rad`, the maximum possible joint velocity is `(1+2+3)·2π·√2·C = 53.3·C = 1.385 rad/s < 1.396 rad/s` for all time. No separate velocity constraint is needed in the optimizer.
+The trajectory is periodic by construction (period T = 1/f), which prevents drift and produces repeatable cyclic mixing motions.
 
 ### Dynamics Model
 
-Full Recursive Newton-Euler using inertial parameters from `kortex_description` URDF:
+Full Recursive Newton-Euler (RNE) using inertial parameters from `kortex_description` URDF:
 
 ```
 τ = M(q)q̈ + C(q,q̇)q̇ + G(q)
@@ -365,27 +388,41 @@ Verified: `M(q)@qddot + C + G == rne(q,qdot,qddot)` to machine precision (< 1e-1
 
 ### Optimization
 
-```
-Minimize:  J(x) = (1/N) Σ_t [ 1.0·||τ(t)||² − 0.5·||a_ee(t)||² ]
+**Objective** (minimize torque, maximize directional end-effector acceleration):
 
-Subject to:
-    q_min[i]  ≤ q_i(t)   ≤ q_max[i]    (joint limits)
-    |τ_i(t)|              ≤ τ_max[i]    (torque limits)
-    Σ x²                  ≥ 0.001       (non-trivial motion)
-    (velocity limits guaranteed by coefficient bounds — see above)
+```
+J(x) = (1/N) Σ_t [ 1.0·||τ(t)||²  −  50·(a_ee(t)·n̂)²  +  1.0·||p_ee_perp(t)||² ]
 ```
 
-Solver: `scipy.optimize.minimize` with `method='SLSQP'`, 3 batched vector-valued constraint functions (~541 scalar constraints total). Converges in ~20 iterations, ~100 seconds.
+where `n̂ = [0, 1, 0]` (world Y axis — along the bottle/tool axis), and `p_ee_perp` is EE position drift perpendicular to the shake axis. The directional acceleration term `(a_ee·n̂)²` rewards only back-and-forth motion along the shake axis; purely circular orbits generate no reward. The drift penalty keeps the EE near its center position.
+
+**Constraints:**
+
+```
+q_min[i]  ≤ q_i(t)                       ≤ q_max[i]       (joint position limits, sampled)
+Σ_k kω√(a_ik²+b_ik²)                     ≤ 0.95·v_max[i]  (velocity limit, analytic upper bound)
+|τ_i(t)|                                  ≤ 0.95·τ_max[i]  (torque limits, sampled, 5% margin)
+Σ x²                                      ≥ 0.001           (non-trivial motion)
+```
+
+The velocity constraint uses the triangle-inequality bound on `|qdot_i(t)|` for all `t`, not a sampled check. This is necessary because the 3rd harmonic at f=1 Hz oscillates at 3 Hz — with only 60 optimization time points over 6 seconds (~3.3 samples/cycle), sampled velocity peaks are missed. The analytic bound is exact regardless of the time grid. The 5% safety margin on torques keeps SLSQP's linesearch away from constraint boundaries during refinement.
+
+**Solver — two-phase global optimization (`--global`):**
+
+1. **Phase 1 — Differential Evolution:** Population of 180 individuals (`5 × 36 vars`) evolved for up to 200 generations with the same constraints. Escapes local minima without requiring a good initial guess.
+2. **Phase 2 — SLSQP refinement:** Polishes the DE solution to tighter convergence. If SLSQP diverges but the stopped point is still physically feasible, it is kept (it is typically better than the DE solution). If SLSQP leaves the feasible region, the DE solution is used instead.
+
+Fast local-only mode (no `--global`) runs 16-start multi-start SLSQP in ~100 seconds, suitable for iteration but more likely to find local optima.
 
 ---
 
 ## Grading Checklist (A-Level)
 
-- [x] Full dynamic torque computation — Recursive Newton-Euler
-- [x] Defined optimization objective — mixed torque + acceleration
-- [x] Constrained SLSQP optimization — converges in ~100s, all constraints satisfied
-- [x] Comparative plots — baseline vs optimized (torques, velocities, EE acceleration, EE path)
-- [x] Constraint satisfaction verified — position, velocity, torque limits all satisfied
+- [x] Full dynamic torque computation — Recursive Newton-Euler, verified to machine precision
+- [x] Defined optimization objective — directional EE acceleration along shake axis + torque minimization + drift penalty
+- [x] Constrained global optimization — Differential Evolution + SLSQP, all physical constraints satisfied
+- [x] Comparative plots — baseline vs optimized (torques, velocities, EE acceleration, EE path projected onto shake axis) — `comparison_plots_amplitude.png`, `comparison_plots_frequency.png`
+- [x] Constraint satisfaction verified — position, velocity, torque limits all satisfied with explicit margins (see `results_summary_tables.png` / `.xlsx`)
 - [x] ROS2 Gazebo + RViz simulation with trajectory execution
 - [x] Real-time metrics monitoring and CSV logging
 - [x] Smoothed real-time qddot estimate (3-sample sliding window FD in metrics node)

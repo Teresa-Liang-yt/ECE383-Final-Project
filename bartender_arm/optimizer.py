@@ -165,13 +165,16 @@ def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
     trajectory evaluations from ~26,000 to ~4 per SLSQP iteration.
 
     Constraints:
-        1. q_max[i] - q[t,i]     >= 0   for all t, i  (upper pos limit)
-        2. q[t,i]   - q_min[i]   >= 0   for all t, i  (lower pos limit)
-        3. t_max[i] - |tau[t,i]| >= 0   for all t, i  (torque limit)
-        4. sum(x²)  - A_min      >= 0                  (minimum motion)
+        1. q_max[i] - q[t,i]                       >= 0   for all t, i  (upper pos limit)
+        2. q[t,i]   - q_min[i]                     >= 0   for all t, i  (lower pos limit)
+        3. tau_max[i] - |tau[t,i]|                 >= 0   for all t, i  (torque limit)
+        4. v_max[i] - Σ_k kω√(a_ik²+b_ik²)        >= 0   for all i     (velocity, analytic)
+        5. sum(x²)  - A_min                         >= 0                 (minimum motion)
 
-    Velocity limits are enforced implicitly via max_coeff_amplitude bounds:
-        (1+2+3)*2*pi*f*max_coeff = 1.319 rad/s < v_max = 1.3963 rad/s  ✓
+    The velocity constraint uses the triangle-inequality upper bound on |qdot_i(t)|
+    for ALL t — not a sampled check.  This is exact regardless of n_opt_points and
+    avoids missed peaks when the highest harmonic (k=3 at f=1 Hz → 3 Hz) is
+    undersampled by the optimization time grid.
     """
     robot   = params['robot']
     opt_cfg = params['optimization']
@@ -206,11 +209,19 @@ def make_constraints(t_arr, q0, f, params, n_harmonics: int = 3) -> list:
         return np.concatenate([upper, lower])
 
     def vel_constraints(x):
-        # Explicit velocity constraint: v_max[j] - |qdot[t,j]| >= 0
-        # This replaces the previous implicit guarantee via conservative coefficient bounds,
-        # allowing max_coeff_amplitude to be set higher so the optimizer explores more.
-        _, qdot, _ = _eval(x)
-        return (v_max - np.abs(qdot)).ravel()
+        # Analytical upper bound on peak |qdot_i(t)| via triangle inequality:
+        #   max_t |qdot_i(t)| <= sum_k kω * sqrt(a_ik^2 + b_ik^2)
+        # Exact for all t — no sampling error regardless of n_opt_points.
+        K = n_harmonics
+        a_v = x[:6 * K].reshape(6, K)
+        b_v = x[6 * K:].reshape(6, K)
+        omega = 2.0 * np.pi * f
+        peak_v = np.array([
+            sum(np.sqrt(a_v[i, k] ** 2 + b_v[i, k] ** 2) * (k + 1) * omega
+                for k in range(K))
+            for i in range(6)
+        ])
+        return v_max - peak_v  # >= 0 means feasible
 
     def torque_constraints(x):
         _, _, torques = _eval(x)
@@ -505,6 +516,20 @@ def global_optimization(q0, f: float, t_arr_opt, params,
         verbose=verbose, max_coeff=max_coeff)
 
     result.de_result = de_result
+
+    if not result.success:
+        # SLSQP linesearch failed — check whether the stopped point is still physically feasible.
+        # If yes, keep it (it may be better than DE). If no, fall back to the DE solution.
+        constr_check = check_constraints(result.x, t_arr, q0, f, params, n_harmonics)
+        if constr_check['satisfied']:
+            if verbose:
+                print("  SLSQP didn't converge but result is feasible — keeping it.")
+        else:
+            if verbose:
+                print("  SLSQP result is infeasible — falling back to DE solution.")
+            de_result.de_result = de_result
+            return de_result
+
     return result
 
 

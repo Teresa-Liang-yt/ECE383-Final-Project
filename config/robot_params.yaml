@@ -154,7 +154,7 @@ trajectory_modes:
     n_harmonics: 3
     # Raised from 0.10 to 0.20: velocity is now checked explicitly in make_constraints,
     # so the conservative sqrt(2) implicit bound is no longer the binding constraint.
-    max_coeff_amplitude: 0.20   # rad — optimizer free to explore; velocity enforced directly
+    max_coeff_amplitude: 0.25   # rad — optimizer free to explore; velocity enforced directly
     coeffs_file: amplitude_coeffs.npy
 
   frequency:

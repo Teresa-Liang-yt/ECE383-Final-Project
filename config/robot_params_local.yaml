@@ -1,0 +1,184 @@
+# robot_params.yaml
+# Single source of truth for all Kinova Gen3 Lite numerical parameters.
+# Values derived from kortex_description/robots/gen3_lite.urdf (ros2_kortex, main branch).
+# DO NOT hardcode these values anywhere else in the project.
+
+robot:
+  name: gen3_lite
+  dof: 6
+  joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
+
+  # Joint position limits [lower, upper] in radians
+  # Source: kortex_description/urdf/gen3_lite.ros2_control.xacro
+  joint_limits:
+    joint_1: [-2.6878, 2.6878]
+    joint_2: [-2.2689, 2.2689]
+    joint_3: [-2.6878, 2.6878]
+    joint_4: [-2.0000, 2.0000]
+    joint_5: [-2.6878, 2.6878]
+    joint_6: [-2.6878, 2.6878]
+
+  # Joint velocity limits (rad/s)
+  velocity_limits: [1.3963, 1.3963, 1.3963, 1.3963, 1.3963, 1.3963]
+
+  # Joint effort/torque limits (Nm)
+  effort_limits: [10.0, 14.0, 10.0, 7.0, 7.0, 7.0]
+
+  # Fixed transforms from parent frame to child frame, BEFORE applying q[i] rotation.
+  # Each entry is applied as: T = T @ T_fixed[i] @ Rz(q[i])
+  # Convention: URDF rpy = Rx(r) * Ry(p) * Rz(y)  (intrinsic XYZ rotations)
+  # Joint axis is always local Z = [0, 0, 1] for all 6 joints.
+  # Source: <joint> elements in gen3_lite.urdf, child link origin xyz/rpy
+  joint_transforms:
+    - xyz: [0.0, 0.0, 0.12825]
+      rpy: [0.0, 0.0, 0.0]
+    - xyz: [0.0, -0.03, 0.115]
+      rpy: [1.5707963, 0.0, 0.0]
+    - xyz: [0.0, 0.28, 0.0]
+      rpy: [-3.1415926, 0.0, 0.0]
+    - xyz: [0.0, -0.14, 0.02]
+      rpy: [1.5707963, 0.0, 0.0]
+    - xyz: [0.0285, 0.0, 0.105]
+      rpy: [0.0, 1.5707963, 0.0]
+    - xyz: [-0.105, 0.0, 0.0285]
+      rpy: [0.0, -1.5707963, 0.0]
+
+  # End-effector offset from last joint frame (tool/bracelet_with_vision_link)
+  ee_offset:
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+
+  # Inertial parameters per link, expressed in each link's own coordinate frame.
+  # Source: <inertial> elements in gen3_lite.urdf
+  # Note: <inertial><origin rpy="0 0 0"> for all links — no tensor rotation needed.
+  inertial:
+    base_link:
+      mass: 1.14608471
+      com: [0.00244324, 0.00015573, 0.08616742]
+      inertia:
+        ixx: 0.00335854
+        ixy: 0.00000039
+        ixz: 0.00010989
+        iyy: 0.00331100
+        iyz: 0.00000191
+        izz: 0.00077158
+
+    shoulder_link:
+      mass: 0.95974404
+      com: [0.00002477, 0.02213531, 0.09937686]
+      inertia:
+        ixx: 0.00165947
+        ixy: 0.00000002
+        ixz: 0.00000036
+        iyy: 0.00140355
+        iyz: 0.00034927
+        izz: 0.00089493
+
+    arm_link:
+      mass: 1.17756164
+      com: [0.02998299, 0.21154808, 0.04530310]
+      inertia:
+        ixx: 0.01149277
+        ixy: 0.00000100
+        ixz: 0.00000016
+        iyy: 0.00102851
+        iyz: 0.00140765
+        izz: 0.01133492
+
+    forearm_link:
+      mass: 0.59767669
+      com: [0.03015590, 0.09502206, 0.00735550]
+      inertia:
+        ixx: 0.00163256
+        ixy: 0.00000711
+        ixz: 0.00000154
+        iyy: 0.00029798
+        iyz: 0.00009587
+        izz: 0.00169091
+
+    lower_wrist_link:
+      mass: 0.52693412
+      com: [0.00575149, 0.01000443, 0.08719207]
+      inertia:
+        ixx: 0.00069098
+        ixy: 0.00000024
+        ixz: 0.00016483
+        iyy: 0.00078519
+        iyz: 0.00000074
+        izz: 0.00034115
+
+    upper_wrist_link:
+      mass: 0.58097325
+      com: [0.08056517, 0.00980409, 0.01872799]
+      inertia:
+        ixx: 0.00021268
+        ixy: 0.00000521
+        ixz: 0.00000291
+        iyy: 0.00106371
+        iyz: 0.00000011
+        izz: 0.00108465
+
+  # Link names in order (matches inertial order above, joint i connects
+  # parent_links[i] to child_links[i])
+  parent_links:
+    - base_link
+    - shoulder_link
+    - arm_link
+    - forearm_link
+    - lower_wrist_link
+    - upper_wrist_link
+  child_link_names:
+    - shoulder_link
+    - arm_link
+    - forearm_link
+    - lower_wrist_link
+    - upper_wrist_link
+    - bracelet_link
+
+trajectory:
+  # Home/center pose for mixing (joint angles in radians)
+  # A pose that places the end-effector roughly forward and out at
+  # a comfortable "mixing height" (~0.3m above base, 0.3m out)
+  mixing_center_joints: [0.0, 0.3491, -0.5236, 0.0, 0.8727, 0.0]
+
+  n_waypoints: 120     # waypoints for ROS JointTrajectory message
+
+# Two optimization modes with different frequency/amplitude tradeoffs.
+# Velocity safety check: max_qdot = (1+2+3)*2*pi*f*sqrt(2)*C = 53.31*f*C < v_max=1.3963 rad/s
+trajectory_modes:
+  amplitude:
+    description: "Large slow sweeping motion — max joint displacement, low frequency"
+    frequency: 0.25             # Hz
+    duration: 8.0               # seconds (integer multiple of 1/frequency)
+    n_harmonics: 3
+    max_coeff_amplitude: 0.10   # rad — 53.31*0.25*0.10 = 1.333 rad/s < 1.396 rad/s ✓
+    coeffs_file: amplitude_coeffs.npy
+
+  frequency:
+    description: "Fast tight mixing — max oscillation frequency, small amplitude"
+    frequency: 1.0              # Hz
+    duration: 6.0               # seconds
+    n_harmonics: 3
+    max_coeff_amplitude: 0.026  # rad — 53.31*1.0*0.026 = 1.386 rad/s < 1.396 rad/s ✓
+    coeffs_file: frequency_coeffs.npy
+
+optimization:
+  method: SLSQP
+  max_iter: 300
+  ftol: 1.0e-6
+  n_opt_points: 30     # time samples used during optimization (fewer = faster)
+  n_eval_points: 300   # time samples for final evaluation and plotting
+
+  # Multi-objective weights
+  # J = weight_torque * J_torque - weight_accel * J_accel
+  # (negative accel weight because we minimize J but want to maximize acceleration)
+  weight_torque: 1.0
+  weight_accel: 0.5
+
+  # Minimum total amplitude squared (prevents degenerate zero-motion solution).
+  # With max_coeff=0.026 and one nonzero pair (a,b)=(C,C): 2*0.026^2 = 0.00135 > 0.001
+  min_amplitude_sq: 0.001
+
+  # max_coeff_amplitude is set per trajectory_mode (see above).
+  # Default here is unused when --mode is specified; kept for backward compatibility.
+  max_coeff_amplitude: 0.10
